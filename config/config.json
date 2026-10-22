@@ -1,0 +1,8 @@
+{
+  "retention_days": 30,
+  "max_rows": 5000,
+  "ignore_transient": true,
+  "ignore_apps": [],
+  "persistent_apps": [],
+  "persistent_categories": []
+}
