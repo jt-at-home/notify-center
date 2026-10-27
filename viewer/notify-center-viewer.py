@@ -1015,13 +1015,17 @@ class MainWindow(Gtk.ApplicationWindow):
             self._show_start_button(False)
             return
 
-        # No systemd unit to start (e.g. an install with --no-service):
-        # fall back to a detached background process.
-        bin_path = Path.home() / ".local" / "bin" / "notify-center-collector"
-        if bin_path.is_file():
+        # No systemd unit to start (e.g. an install with --no-service or a
+        # packaged install without systemd): fall back to a detached process.
+        bin_path = shutil.which("notify-center-collector")
+        if bin_path is None:
+            candidate = Path.home() / ".local" / "bin" / "notify-center-collector"
+            if candidate.is_file():
+                bin_path = str(candidate)
+        if bin_path:
             try:
                 subprocess.Popen(
-                    [str(bin_path)],
+                    [bin_path],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
@@ -1044,8 +1048,8 @@ class MainWindow(Gtk.ApplicationWindow):
             f"{detail}\n\n"
             "Start it manually with:\n"
             "  systemctl --user start notify-center-collector\n"
-            "or, if you installed with --no-service:\n"
-            "  ~/.local/bin/notify-center-collector &",
+            "or run it directly:\n"
+            "  notify-center-collector &",
         )
 
     def _connect_monitors(self) -> None:

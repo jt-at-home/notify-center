@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Notification Center
+Comment=Browse, search and manage notification history
+Exec=/usr/bin/notify-center-viewer
+Icon=dialog-information
+Terminal=false
+Categories=Utility;GTK;
+StartupNotify=true

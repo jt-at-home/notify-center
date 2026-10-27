@@ -1,0 +1,38 @@
+.TH NOTIFY-CENTER-VIEWER 1 "2026-10-27" "notify-center" "User Commands"
+.SH NAME
+notify-center-viewer \- browse and manage the Notification Center history
+.SH SYNOPSIS
+.B notify-center-viewer
+.RB [ \-\-self-test ]
+.RB [ \-\-version ]
+.SH DESCRIPTION
+.B notify-center-viewer
+is a GTK 3 application that shows the notification history recorded by
+.BR notify-center-collector (1).
+It can search across app, title and body, filter by app, category or unread
+state, mark notifications read or unread, delete or clear entries, and export
+the current view as JSON.
+.PP
+Launching it again focuses the existing window instead of opening a second
+copy.
+.SH OPTIONS
+.TP
+.B \-\-self-test
+Build the interface, print the number of rows and exit. Used by the test
+suite; it does not modify the database.
+.TP
+.B \-\-version
+Print the version and exit.
+.SH FILES
+.TP
+.I ~/.local/share/notify-center/notifications.db
+The SQLite history, opened read-only.
+.TP
+.I ~/.config/notify-center/config.json
+Optional settings.
+.SH SEE ALSO
+.BR notify-center-collector (1)
+.PP
+The project home page:
+.UR https://github.com/jt-at-home/notify-center
+.UE

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Notification Center collector
+Comment=Record Cinnamon notifications into the local Notification Center history
+Exec=/usr/lib/notify-center/notify-center-collector-autostart
+Terminal=false
+NoDisplay=true
+OnlyShowIn=X-Cinnamon;
+X-GNOME-Autostart-enabled=true

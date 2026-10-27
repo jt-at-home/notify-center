@@ -1,0 +1,27 @@
+#!/bin/sh
+# Notification Center collector autostart helper.
+#
+# Started from /etc/xdg/autostart so the collector runs for every Cinnamon
+# login without the user having to enable a unit. Prefer the systemd user
+# unit (supervision, restarts, journald) and fall back to running the
+# collector directly where systemd --user is not available.
+set -u
+
+if command -v systemctl >/dev/null 2>&1; then
+    # systemd --user does not inherit the session environment, so pass
+    # custom XDG paths through when they are set.
+    if [ -n "${XDG_DATA_HOME:-}" ]; then
+        systemctl --user import-environment XDG_DATA_HOME >/dev/null 2>&1 || true
+    fi
+    if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+        systemctl --user import-environment XDG_CONFIG_HOME >/dev/null 2>&1 || true
+    fi
+
+    if systemctl --user show-environment >/dev/null 2>&1; then
+        if systemctl --user start notify-center-collector.service >/dev/null 2>&1; then
+            exit 0
+        fi
+    fi
+fi
+
+exec /usr/bin/notify-center-collector

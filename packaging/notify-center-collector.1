@@ -1,0 +1,62 @@
+.TH NOTIFY-CENTER-COLLECTOR 1 "2026-10-27" "notify-center" "User Commands"
+.SH NAME
+notify-center-collector \- drain Notification Center spool files into a local history
+.SH SYNOPSIS
+.B notify-center-collector
+.RB [ \-\-once ]
+.RB [ \-\-verbose ]
+.RB [ \-\-poll " seconds" ]
+.RB [ \-\-data-dir " directory" ]
+.RB [ \-\-config " file" ]
+.SH DESCRIPTION
+.B notify-center-collector
+turns the JSON notification records written by the Notification Center
+Cinnamon applet into a local SQLite history. It also maintains
+.I status.json
+so the applet can show an unread count without reading SQLite itself.
+.PP
+The collector normally runs at login from the
+.B notify-center-collector.service
+systemd user unit, started by an XDG autostart helper. It requires only the
+Python standard library.
+.SH OPTIONS
+.TP
+.B \-\-once
+Drain the spool once and exit. Useful for testing and for creating the
+database when the service has never run.
+.TP
+.B \-\-verbose
+Log every spool file that is processed.
+.TP
+.BI \-\-poll " seconds"
+Seconds between spool scans. Defaults to 2.
+.TP
+.BI \-\-data-dir " directory"
+Use a different data directory instead of
+.IR ~/.local/share/notify-center .
+.TP
+.BI \-\-config " file"
+Use a different configuration file instead of
+.IR ~/.config/notify-center/config.json .
+.TP
+.B \-\-help
+Show a short usage summary.
+.SH FILES
+.TP
+.I ~/.local/share/notify-center/notifications.db
+The SQLite history, created with mode 0600.
+.TP
+.I ~/.local/share/notify-center/status.json
+Unread and total counts, updated after each drain.
+.TP
+.I ~/.local/share/notify-center/spool/
+One JSON file per captured notification, removed once processed.
+.TP
+.I ~/.config/notify-center/config.json
+Retention, filtering and display settings.
+.SH SEE ALSO
+.BR notify-center-viewer (1)
+.PP
+The project home page:
+.UR https://github.com/jt-at-home/notify-center
+.UE
