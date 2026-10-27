@@ -16,6 +16,7 @@ const HOME = GLib.get_home_dir();
 const DATA_DIR = GLib.get_user_data_dir() + "/notify-center";
 const SPOOL_DIR = DATA_DIR + "/spool";
 const STATUS_FILE = DATA_DIR + "/status.json";
+const IGNORED_FILE = DATA_DIR + "/ignored.json";
 const CONFIG_FILE = GLib.get_user_config_dir() + "/notify-center/config.json";
 
 let passed = 0;
@@ -101,6 +102,7 @@ check(
 const originalMethod = Main.notificationDaemon._notifyForSource;
 applet.on_applet_added_to_panel();
 check("hook installed", Main.notificationDaemon._notifyForSource !== originalMethod);
+check("config monitor installed", applet._configMonitor !== null);
 
 const first = {
     id: 10,
@@ -169,6 +171,7 @@ Main.notificationDaemon._notifyForSource({}, {
 });
 check("transient notification skipped", spoolFiles().length === before);
 
+const ignoredBefore = applet._ignoredCount;
 Main.notificationDaemon._notifyForSource({}, {
     id: 12,
     appName: "Noisy",
@@ -177,6 +180,25 @@ Main.notificationDaemon._notifyForSource({}, {
     hints: {},
 });
 check("ignored app skipped", spoolFiles().length === before);
+check(
+    "ignored counter increments",
+    applet._ignoredCount === ignoredBefore + 1,
+    String(applet._ignoredCount)
+);
+applet._flushIgnoredCount();
+const ignoredData = readJsonFile(IGNORED_FILE);
+check(
+    "ignored counter persisted",
+    ignoredData.count === ignoredBefore + 1,
+    JSON.stringify(ignoredData)
+);
+applet._ignoredCount = 0;
+applet._loadIgnoredCount();
+check(
+    "ignored counter reloads from disk",
+    applet._ignoredCount === ignoredBefore + 1,
+    String(applet._ignoredCount)
+);
 
 const keepResident = {
     resident: false,
@@ -552,6 +574,64 @@ check(
 );
 writeJsonFile(CONFIG_FILE, savedConfig);
 
+// First-run hint and preferences entry.
+applet._loadConfig();
+check(
+    "setup hint hidden when config exists",
+    applet._setupItem.actor.visible === false
+);
+Gio.File.new_for_path(CONFIG_FILE).delete(null);
+applet._loadConfig();
+check(
+    "setup hint shown when config is missing",
+    applet._setupItem.actor.visible === true
+);
+writeJsonFile(CONFIG_FILE, savedConfig);
+applet._loadConfig();
+check(
+    "setup hint hidden after the config is restored",
+    applet._setupItem.actor.visible === false
+);
+
+// Config changes apply without a Cinnamon restart.
+const monitorConfig = readJsonFile(CONFIG_FILE);
+writeJsonFile(CONFIG_FILE, { ...monitorConfig, toast_enabled: false });
+applet._loadConfig();
+check("config monitor baseline", applet._config.toastEnabled === false);
+
+const monitorLoop = new GLib.MainLoop(null, false);
+GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {
+    writeJsonFile(CONFIG_FILE, { ...monitorConfig, toast_enabled: true });
+    return GLib.SOURCE_REMOVE;
+});
+GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+    if (applet._config.toastEnabled) {
+        monitorLoop.quit();
+        return GLib.SOURCE_REMOVE;
+    }
+    return GLib.SOURCE_CONTINUE;
+});
+GLib.timeout_add(GLib.PRIORITY_DEFAULT, 3000, () => {
+    monitorLoop.quit();
+    return GLib.SOURCE_REMOVE;
+});
+monitorLoop.run();
+check(
+    "config monitor reloads changes without restart",
+    applet._config.toastEnabled === true
+);
+writeJsonFile(CONFIG_FILE, monitorConfig);
+applet._loadConfig();
+
+const prefsSpawnBefore = Util.spawned.length;
+applet._openPreferences();
+check(
+    "preferences launched with --settings",
+    Util.spawned.length === prefsSpawnBefore + 1 &&
+        String(Util.spawned[Util.spawned.length - 1][1]) === "--settings",
+    JSON.stringify(Util.spawned[Util.spawned.length - 1])
+);
+
 const aboutSpawnBefore = Util.spawned.length;
 applet._openAbout();
 check(
@@ -634,6 +714,7 @@ check(
     Main.notificationDaemon._notifyForSource === originalMethod
 );
 check("menu destroyed on removal", applet.menu === null);
+check("config monitor cancelled on removal", applet._configMonitor === null);
 
 if (failures.length > 0) {
     print("\n" + failures.length + " failure(s):");

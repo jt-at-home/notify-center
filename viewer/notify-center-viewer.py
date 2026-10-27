@@ -37,7 +37,7 @@ URGENCY_NAMES = {0: "Low", 1: "Normal", 2: "Critical"}
 DB_MISSING_ERROR = "database not created yet"
 COLLECTOR_SERVICE = "notify-center-collector.service"
 START_PENDING_SECONDS = 45
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3.0"
 PROJECT_URL = "https://github.com/jt-at-home/notify-center"
 
 
@@ -54,6 +54,7 @@ def config_dir() -> Path:
 DATA_DIR = data_dir()
 DB_PATH = DATA_DIR / "notifications.db"
 STATUS_PATH = DATA_DIR / "status.json"
+IGNORED_PATH = DATA_DIR / "ignored.json"
 CONFIG_PATH = config_dir() / "config.json"
 
 # Written on first use so the Settings button works on a clean install.
@@ -85,6 +86,77 @@ def ensure_config_file() -> Path:
     )
     os.chmod(CONFIG_PATH, 0o600)
     return CONFIG_PATH
+
+
+def load_config() -> dict:
+    """Return the config merged over the defaults; never raises."""
+    try:
+        raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    config = dict(DEFAULT_CONFIG)
+    config.update(raw)
+    return config
+
+
+def save_config(values: dict) -> Path:
+    """Merge values into the config and replace it atomically (mode 0600)."""
+    config = load_config()
+    config.update(values)
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    temporary.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, CONFIG_PATH)
+    return CONFIG_PATH
+
+
+def clamp_int(value, fallback: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(minimum, min(maximum, number))
+
+
+def parse_list(text: str) -> list[str]:
+    """Parse a comma-separated rule list, lowercased and de-duplicated."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for part in (text or "").split(","):
+        item = part.strip().lower()
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+# Cinnamon's own notification popups. notify-center's toasts are independent,
+# so both can be on at once; the preferences dialog surfaces that.
+CINNAMON_NOTIFICATIONS_SCHEMA = "org.cinnamon.desktop.notifications"
+CINNAMON_DISPLAY_KEY = "display-notifications"
+TOAST_POSITIONS = ("top-right", "bottom-right", "top-left", "bottom-left")
+
+
+def cinnamon_popups_enabled() -> bool | None:
+    """Return Cinnamon's display-notifications setting, or None if unavailable."""
+    try:
+        settings = Gio.Settings.new(CINNAMON_NOTIFICATIONS_SCHEMA)
+        return bool(settings.get_boolean(CINNAMON_DISPLAY_KEY))
+    except Exception:
+        return None
+
+
+def set_cinnamon_popups(enabled: bool) -> bool:
+    try:
+        settings = Gio.Settings.new(CINNAMON_NOTIFICATIONS_SCHEMA)
+        settings.set_boolean(CINNAMON_DISPLAY_KEY, enabled)
+        settings.sync()
+        return True
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +239,81 @@ def read_status() -> dict | None:
         return None
 
 
+def read_ignored_count() -> int:
+    """Number of notifications skipped by the applet's ignore list so far."""
+    try:
+        data = json.loads(IGNORED_PATH.read_text(encoding="utf-8"))
+        count = int(data.get("count", 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+    return max(0, count)
+
+
+def normalize_app_rule(value) -> str:
+    text = str(value or "").strip().lower()
+    if text.endswith(".desktop"):
+        text = text[: -len(".desktop")]
+    return text
+
+
+def ignore_rules_for_rows(rows) -> tuple[list[str], list[str]]:
+    """Return (rules, labels) for rows of (app, desktop_entry)."""
+    rules: list[str] = []
+    labels: list[str] = []
+    seen_labels: set[str] = set()
+    for app, desktop_entry in rows:
+        app = str(app or "").strip()
+        desktop_entry = str(desktop_entry or "").strip()
+        label = app or desktop_entry
+        if label and label.lower() not in seen_labels:
+            seen_labels.add(label.lower())
+            labels.append(label)
+        for value in (app, desktop_entry):
+            rule = normalize_app_rule(value)
+            if rule and rule not in rules:
+                rules.append(rule)
+    return rules, labels
+
+
+def merge_ignore_rules(
+    existing: list[str], rules: list[str]
+) -> tuple[list[str], list[str]]:
+    """Return (merged, added) keeping the existing order."""
+    merged = list(existing)
+    added: list[str] = []
+    seen = set(existing)
+    for rule in rules:
+        if rule and rule not in seen:
+            seen.add(rule)
+            merged.append(rule)
+            added.append(rule)
+    return merged, added
+
+
+def format_app_list(labels: list[str], limit: int = 3) -> str:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        text = str(label or "").strip()
+        if text and text.lower() not in seen:
+            seen.add(text.lower())
+            unique.append(text)
+    if not unique:
+        return ""
+    if len(unique) > limit:
+        return ", ".join(unique[:limit]) + f" and {len(unique) - limit} more"
+    return ", ".join(unique)
+
+
+def format_notification_count(shown: int, total: int) -> str:
+    """Only say "X of Y" when the row limit actually hides matches."""
+    if total > ROW_LIMIT:
+        return f"{shown} of {total} notifications"
+    if total == 1:
+        return "1 notification"
+    return f"{total} notifications"
+
+
 def plain(text: str) -> str:
     return html.unescape(text or "")
 
@@ -189,15 +336,29 @@ class ViewerApplication(Gtk.Application):
         self.self_test = self_test
         self.window: MainWindow | None = None
         self.failed = False
+        self.preferences: PreferencesDialog | None = None
 
     def do_activate(self) -> None:
         if self.window is None:
             self.window = MainWindow(self)
         if self.self_test:
             GLib.timeout_add(300, self._finish_self_test)
-        else:
-            self.window.show_all()
-            self.window.present()
+            return
+        self.window.show_all()
+        self.window.present()
+
+    def open_preferences(self) -> None:
+        if self.window is None:
+            return
+        if self.preferences is not None:
+            self.preferences.present()
+            return
+        dialog = PreferencesDialog(self.window)
+        self.preferences = dialog
+        try:
+            dialog.run()
+        finally:
+            self.preferences = None
 
     def _finish_self_test(self) -> bool:
         window = self.window
@@ -252,6 +413,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._db_error: str | None = None
         self._search_timeout = 0
         self._reload_timeout = 0
+        self._action_message = ""
+        self._action_message_timeout = 0
         self._status_monitor = None
         self._last_reload = 0.0
         self._list_info_base = ""
@@ -262,6 +425,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._connect_monitors()
         self._reload(initial=True)
         self._start_timers()
+        self.connect("destroy", self._on_destroy)
 
     # -- UI ---------------------------------------------------------------
 
@@ -287,9 +451,9 @@ class MainWindow(Gtk.ApplicationWindow):
         clear_button.connect("clicked", self._clear_all)
         header.pack_end(clear_button)
 
-        settings_button = Gtk.Button(label="Settings")
-        settings_button.set_tooltip_text("Open the notification-center config file")
-        settings_button.connect("clicked", self._open_config)
+        settings_button = Gtk.Button(label="Preferences")
+        settings_button.set_tooltip_text("Notification Center preferences")
+        settings_button.connect("clicked", self._open_preferences)
         header.pack_end(settings_button)
 
         about_button = Gtk.Button(label="About")
@@ -335,6 +499,14 @@ class MainWindow(Gtk.ApplicationWindow):
         self.delete_button = Gtk.Button(label="Delete")
         self.delete_button.connect("clicked", self._delete_selected)
         filters.pack_start(self.delete_button, False, False, 0)
+
+        self.ignore_button = Gtk.Button(label="Ignore App")
+        self.ignore_button.set_tooltip_text(
+            "Stop recording future notifications from the selected app(s). "
+            "Existing history is kept."
+        )
+        self.ignore_button.connect("clicked", self._ignore_selected_apps)
+        filters.pack_start(self.ignore_button, False, False, 0)
 
         self.mark_all_button = Gtk.Button(label="Mark all read")
         self.mark_all_button.set_tooltip_text("Mark every unread notification as read")
@@ -613,13 +785,8 @@ class MainWindow(Gtk.ApplicationWindow):
                     "Cannot read the notification database.\n\n" + db_error
                 )
             else:
-                self._list_info_base = (
-                    f"{shown} of {filtered_total} notifications"
-                    + (
-                        " (limited to %d)" % ROW_LIMIT
-                        if filtered_total > ROW_LIMIT
-                        else ""
-                    )
+                self._list_info_base = format_notification_count(
+                    shown, filtered_total
                 )
                 if shown == 0:
                     if self.search_entry.get_text().strip() or self._current_filters() != (
@@ -684,7 +851,12 @@ class MainWindow(Gtk.ApplicationWindow):
             self.empty_label.hide()
 
     def _set_actions_sensitive(self, sensitive: bool) -> None:
-        for button in (self.mark_read_button, self.mark_unread_button, self.delete_button):
+        for button in (
+            self.mark_read_button,
+            self.mark_unread_button,
+            self.delete_button,
+            self.ignore_button,
+        ):
             button.set_sensitive(sensitive)
 
     # -- selection / detail ----------------------------------------------
@@ -832,6 +1004,106 @@ class MainWindow(Gtk.ApplicationWindow):
         self._selected_ids = []
         self._reload()
 
+    def _ignore_selected_apps(self, *_args) -> None:
+        ids = self._selected_or_none()
+        if not ids:
+            return
+        conn = open_readonly()
+        if conn is None:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        try:
+            rows = conn.execute(
+                f"SELECT app, desktop_entry FROM notifications "
+                f"WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        except sqlite3.Error as exc:
+            self._error("Cannot read the selected notifications", str(exc))
+            return
+        finally:
+            conn.close()
+
+        rules, _labels = ignore_rules_for_rows(rows)
+        if not rules:
+            self._show_action_message(
+                "Could not determine which app to ignore from the selection."
+            )
+            return
+
+        config = load_config()
+        existing = parse_list(
+            ", ".join(str(value) for value in config.get("ignore_apps", []))
+        )
+        merged, added = merge_ignore_rules(existing, rules)
+
+        added_set = set(added)
+        added_labels: list[str] = []
+        already_labels: list[str] = []
+        for app, desktop_entry in rows:
+            label = str(app or desktop_entry or "").strip()
+            if not label:
+                continue
+            row_rules = {
+                normalize_app_rule(value)
+                for value in (app, desktop_entry)
+                if normalize_app_rule(value)
+            }
+            if row_rules & added_set:
+                added_labels.append(label)
+            else:
+                already_labels.append(label)
+
+        if added:
+            try:
+                save_config({"ignore_apps": merged})
+            except OSError as exc:
+                self._error("Cannot update the ignore list", str(exc))
+                return
+
+        if added and not added_labels:
+            added_labels = list(added)
+        if not added and not already_labels:
+            already_labels = list(rules)
+
+        if added and already_labels:
+            text = (
+                f"Added to ignored apps: {format_app_list(added_labels)}. "
+                f"Already ignored: {format_app_list(already_labels)}. "
+                "See Preferences → History."
+            )
+        elif added:
+            text = (
+                f"Added to ignored apps: {format_app_list(added_labels)}. "
+                "See Preferences → History."
+            )
+        else:
+            text = (
+                f"Already ignored: {format_app_list(already_labels)}. "
+                "See Preferences → History."
+            )
+        self._show_action_message(text)
+
+    def _show_action_message(self, text: str) -> None:
+        self._action_message = text
+        if self._action_message_timeout:
+            GLib.source_remove(self._action_message_timeout)
+        self._action_message_timeout = GLib.timeout_add_seconds(
+            10, self._clear_action_message
+        )
+        self._update_status()
+
+    def _clear_action_message(self) -> bool:
+        self._action_message_timeout = 0
+        self._action_message = ""
+        self._update_status()
+        return False
+
+    def _on_destroy(self, *_args) -> None:
+        if self._action_message_timeout:
+            GLib.source_remove(self._action_message_timeout)
+            self._action_message_timeout = 0
+
     def _clear_all(self, *_args) -> None:
         if not DB_PATH.exists():
             return
@@ -914,19 +1186,10 @@ class MainWindow(Gtk.ApplicationWindow):
         except OSError as exc:
             self._error("Cannot write the export file", str(exc))
 
-    def _open_config(self, *_args) -> None:
-        try:
-            target = ensure_config_file()
-        except OSError as exc:
-            self._error(
-                "Cannot create the config file",
-                f"{CONFIG_PATH}\n\n{exc}",
-            )
-            return
-        try:
-            subprocess.Popen(["xdg-open", str(target)], close_fds=True)
-        except OSError as exc:
-            self._error("Cannot open the config file", str(exc))
+    def _open_preferences(self, *_args) -> None:
+        app = self.get_application()
+        if isinstance(app, ViewerApplication):
+            app.open_preferences()
 
     def _on_about(self, *_args) -> None:
         about = Gtk.AboutDialog(transient_for=self, modal=True)
@@ -985,9 +1248,17 @@ class MainWindow(Gtk.ApplicationWindow):
             except (TypeError, ValueError):
                 unread = 0
         base = getattr(self, "_list_info_base", "") or ""
+        ignored = read_ignored_count()
+        if (
+            ignored
+            and base
+            and not base.startswith(("No database", "Database unavailable"))
+        ):
+            base = f"{base} ({ignored} ignored)"
         if unread:
             base = f"{base} · {unread} unread"
-        self.list_info.set_text(base)
+
+        self.list_info.set_text(self._action_message or base)
 
         if not status:
             self.collector_info.set_text("Collector: not running")
@@ -1101,7 +1372,7 @@ class MainWindow(Gtk.ApplicationWindow):
             name = file.get_basename() if file else ""
         except Exception:
             name = ""
-        if name == "status.json":
+        if name in ("status.json", "ignored.json"):
             # The collector rewrites its heartbeat every ~30 s. That is not a
             # data change: refreshing the text is enough, and a full reload
             # would rebuild the filter combos and jump the list scroll.
@@ -1182,12 +1453,352 @@ class MainWindow(Gtk.ApplicationWindow):
         return False
 
 
+class PreferencesDialog(Gtk.Dialog):
+    """Preferences for popups, sound and history limits."""
+
+    def __init__(self, parent: Gtk.Window | None = None):
+        ensure_config_file()
+        super().__init__(
+            title="Notification preferences",
+            transient_for=parent,
+            modal=True,
+        )
+        self.set_default_size(640, -1)
+        self.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        self.add_button("Save", Gtk.ResponseType.OK)
+        self.set_default_response(Gtk.ResponseType.OK)
+
+        self._config = load_config()
+        self._cinnamon_original = cinnamon_popups_enabled()
+        self._cinnamon_supported = self._cinnamon_original is not None
+        self._sound_file = str(self._config.get("sound_file") or "")
+
+        content = self.get_content_area()
+        content.set_spacing(12)
+        content.set_border_width(12)
+
+        notebook = Gtk.Notebook()
+        self.notebook = notebook
+        content.pack_start(notebook, True, True, 0)
+        self._build_popups(self._new_page(notebook, "Popups"))
+        self._build_history(self._new_page(notebook, "History"))
+        self._build_footer(content)
+        self.connect("response", self._on_response)
+        self.connect("delete-event", self._on_delete_event)
+
+        self.show_all()
+        self._sync_mode()
+
+    # -- construction -----------------------------------------------------
+
+    @staticmethod
+    def _new_page(notebook: Gtk.Notebook, title: str) -> Gtk.Box:
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        page.set_border_width(12)
+        notebook.append_page(page, Gtk.Label(label=title))
+        return page
+
+    def _build_popups(self, box: Gtk.Box) -> None:
+        heading = Gtk.Label(xalign=0)
+        heading.set_markup("<b>Which notification popups should appear?</b>")
+        box.pack_start(heading, False, False, 0)
+
+        self.mode_cinnamon = Gtk.RadioButton.new_with_label(
+            None, "Cinnamon's own notification popups"
+        )
+        self.mode_notify = Gtk.RadioButton.new_with_label_from_widget(
+            self.mode_cinnamon, "notify-center popups (recommended)"
+        )
+        self.mode_none = Gtk.RadioButton.new_with_label_from_widget(
+            self.mode_cinnamon, "No popups (record silently)"
+        )
+
+        if self._config.get("toast_enabled"):
+            self.mode_notify.set_active(True)
+        elif self._cinnamon_original is False:
+            self.mode_none.set_active(True)
+        else:
+            self.mode_cinnamon.set_active(True)
+
+        for button in (self.mode_cinnamon, self.mode_notify, self.mode_none):
+            box.pack_start(button, False, False, 0)
+            button.connect("toggled", lambda *_: self._sync_mode())
+
+        self.note_label = Gtk.Label(xalign=0)
+        self.note_label.set_line_wrap(True)
+        self.note_label.set_margin_start(24)
+        box.pack_start(self.note_label, False, False, 0)
+
+        self.appearance = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.appearance.set_margin_start(24)
+        box.pack_start(self.appearance, False, False, 0)
+
+        grid = Gtk.Grid(column_spacing=8, row_spacing=6)
+        self.position_combo = Gtk.ComboBoxText()
+        for position in TOAST_POSITIONS:
+            self.position_combo.append(position, position.replace("-", " ").title())
+        current = str(self._config.get("toast_position") or "top-right")
+        if current not in TOAST_POSITIONS:
+            current = "top-right"
+        self.position_combo.set_active_id(current)
+
+        self.timeout_spin = Gtk.SpinButton.new_with_range(1, 60, 1)
+        self.timeout_spin.set_value(
+            clamp_int(self._config.get("toast_timeout"), 5, 1, 60)
+        )
+        grid.attach(Gtk.Label(label="Position", xalign=0), 0, 0, 1, 1)
+        grid.attach(self.position_combo, 1, 0, 2, 1)
+        grid.attach(Gtk.Label(label="Duration", xalign=0), 0, 1, 1, 1)
+        grid.attach(self.timeout_spin, 1, 1, 1, 1)
+        grid.attach(Gtk.Label(label="seconds", xalign=0), 2, 1, 1, 1)
+        self.appearance.pack_start(grid, False, False, 0)
+
+        self.sound_toggle = Gtk.CheckButton(label="Play a sound")
+        self.sound_toggle.set_active(bool(self._config.get("sound_enabled")))
+        self.sound_toggle.set_tooltip_text(
+            "Uses Cinnamon's “Showing notifications” sound unless a custom "
+            "file is selected."
+        )
+        self.sound_toggle.connect("toggled", lambda *_: self._sync_sound_sensitivity())
+        self.appearance.pack_start(self.sound_toggle, False, False, 0)
+
+        sound_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        sound_row.set_margin_start(24)
+        self.custom_sound = Gtk.CheckButton(label="Use a custom file")
+        self.custom_sound.set_active(bool(self._sound_file))
+        self.custom_sound.set_tooltip_text(
+            "Leave unchecked to use Cinnamon's “Showing notifications” sound."
+        )
+        self.custom_sound.connect("toggled", lambda *_: self._sync_sound_sensitivity())
+        sound_row.pack_start(self.custom_sound, False, False, 0)
+        self.sound_chooser = Gtk.FileChooserButton(
+            title="Choose a sound file",
+            action=Gtk.FileChooserAction.OPEN,
+        )
+        if self._sound_file and Path(self._sound_file).is_file():
+            self.sound_chooser.set_filename(self._sound_file)
+        sound_row.pack_start(self.sound_chooser, True, True, 0)
+        self.appearance.pack_start(sound_row, False, False, 0)
+
+    def _build_history(self, box: Gtk.Box) -> None:
+        grid = Gtk.Grid(column_spacing=8, row_spacing=6)
+        self.retention_spin = Gtk.SpinButton.new_with_range(1, 3650, 1)
+        self.retention_spin.set_value(
+            clamp_int(self._config.get("retention_days"), 30, 1, 3650)
+        )
+        self.max_rows_spin = Gtk.SpinButton.new_with_range(100, 100000, 100)
+        self.max_rows_spin.set_value(
+            clamp_int(self._config.get("max_rows"), 5000, 100, 100000)
+        )
+        grid.attach(Gtk.Label(label="Keep notifications for", xalign=0), 0, 0, 1, 1)
+        grid.attach(self.retention_spin, 1, 0, 1, 1)
+        grid.attach(Gtk.Label(label="days", xalign=0), 2, 0, 1, 1)
+        grid.attach(Gtk.Label(label="Keep at most", xalign=0), 0, 1, 1, 1)
+        grid.attach(self.max_rows_spin, 1, 1, 1, 1)
+        grid.attach(Gtk.Label(label="rows", xalign=0), 2, 1, 1, 1)
+        box.pack_start(grid, False, False, 0)
+
+        self.ignore_transient_toggle = Gtk.CheckButton(
+            label="Ignore transient notifications"
+        )
+        self.ignore_transient_toggle.set_active(
+            bool(self._config.get("ignore_transient", True))
+        )
+        box.pack_start(self.ignore_transient_toggle, False, False, 0)
+
+        self.ignored_entry = self._list_row(box, "Ignored apps", "ignore_apps")
+        self.persistent_apps_entry = self._list_row(
+            box, "Keep in Cinnamon tray (apps)", "persistent_apps"
+        )
+        self.persistent_categories_entry = self._list_row(
+            box, "Keep in Cinnamon tray (categories)", "persistent_categories"
+        )
+
+    def _list_row(self, parent: Gtk.Box, label_text: str, key: str) -> Gtk.Entry:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        label = Gtk.Label(label=label_text, xalign=0)
+        label.set_size_request(230, -1)
+        entry = Gtk.Entry()
+        values = self._config.get(key)
+        if isinstance(values, list):
+            entry.set_text(", ".join(str(value) for value in values))
+        entry.set_placeholder_text("comma-separated")
+        row.pack_start(label, False, False, 0)
+        row.pack_start(entry, True, True, 0)
+        parent.pack_start(row, False, False, 0)
+        return entry
+
+    def _build_footer(self, parent: Gtk.Box) -> None:
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        edit_button = Gtk.Button(label="Edit configuration file")
+        edit_button.set_tooltip_text("Open the raw JSON file in the default editor")
+        edit_button.connect("clicked", self._on_edit_file)
+        footer.pack_start(edit_button, False, False, 0)
+
+        test_button = Gtk.Button(label="Send test notification")
+        test_button.set_tooltip_text(
+            "Send a notification using the currently saved settings"
+        )
+        test_button.connect("clicked", self._on_test_notification)
+        footer.pack_end(test_button, False, False, 0)
+        parent.pack_start(footer, False, False, 0)
+
+    # -- state ------------------------------------------------------------
+
+    def _mode(self) -> str:
+        if self.mode_notify.get_active():
+            return "notify"
+        if self.mode_none.get_active():
+            return "none"
+        return "cinnamon"
+
+    def _sync_mode(self) -> None:
+        notify = self._mode() == "notify"
+        self.appearance.set_sensitive(notify)
+        self._sync_sound_sensitivity()
+
+        if not self._cinnamon_supported:
+            self.note_label.set_text(
+                "Cinnamon's notification settings are not available on this system."
+            )
+            return
+
+        mode = self._mode()
+        if mode == "cinnamon":
+            self.note_label.set_text(
+                "Cinnamon shows its own notification; notify-center only records them"
+            )
+        elif mode == "notify":
+            self.note_label.set_text("notify-center will show its own popups.")
+        else:
+            self.note_label.set_text("")
+
+    def _sync_sound_sensitivity(self) -> None:
+        notify = self._mode() == "notify"
+        sound_on = notify and self.sound_toggle.get_active()
+        self.custom_sound.set_sensitive(sound_on)
+        self.sound_chooser.set_sensitive(sound_on and self.custom_sound.get_active())
+
+    # -- actions ----------------------------------------------------------
+
+    def _on_edit_file(self, *_args) -> None:
+        try:
+            target = ensure_config_file()
+        except OSError as exc:
+            self._message("Cannot create the config file", f"{CONFIG_PATH}\n\n{exc}")
+            return
+        try:
+            subprocess.Popen(["xdg-open", str(target)], close_fds=True)
+        except OSError as exc:
+            self._message("Cannot open the config file", str(exc))
+
+    def _on_test_notification(self, *_args) -> None:
+        try:
+            subprocess.Popen(
+                ["notify-send", "Notification Center", "Test notification"],
+                close_fds=True,
+            )
+        except OSError as exc:
+            self._message("Cannot send a test notification", str(exc))
+
+    def _collect(self) -> dict:
+        mode = self._mode()
+        notify = mode == "notify"
+        sound_file = ""
+        if notify and self.sound_toggle.get_active() and self.custom_sound.get_active():
+            chosen = self.sound_chooser.get_filename()
+            if chosen:
+                sound_file = chosen
+        position = self.position_combo.get_active_id() or "top-right"
+        if position not in TOAST_POSITIONS:
+            position = "top-right"
+        return {
+            "toast_enabled": notify,
+            "toast_position": position,
+            "toast_timeout": int(self.timeout_spin.get_value()),
+            "sound_enabled": notify and self.sound_toggle.get_active(),
+            "sound_file": sound_file,
+            "dismiss_after_capture": notify,
+            "retention_days": int(self.retention_spin.get_value()),
+            "max_rows": int(self.max_rows_spin.get_value()),
+            "ignore_transient": self.ignore_transient_toggle.get_active(),
+            "ignore_apps": parse_list(self.ignored_entry.get_text()),
+            "persistent_apps": parse_list(self.persistent_apps_entry.get_text()),
+            "persistent_categories": parse_list(
+                self.persistent_categories_entry.get_text()
+            ),
+        }
+
+    def _on_response(self, _dialog, response: int) -> None:
+        if response == Gtk.ResponseType.OK:
+            if not self._save():
+                return
+        self.destroy()
+
+    def _on_delete_event(self, *_args) -> bool:
+        self.destroy()
+        return True
+
+    def _save(self) -> bool:
+        try:
+            save_config(self._collect())
+        except OSError as exc:
+            self._message("Cannot save preferences", f"{CONFIG_PATH}\n\n{exc}")
+            return False
+        if self._cinnamon_supported:
+            target = self._mode() == "cinnamon"
+            if target != self._cinnamon_original and not set_cinnamon_popups(target):
+                self._message(
+                    "Preferences saved, but Cinnamon's popup setting could not be changed",
+                    "Change it in System Settings → Notifications if needed.",
+                )
+        return True
+
+    def _message(self, title: str, secondary: str) -> None:
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=Gtk.DialogFlags.MODAL,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.CLOSE,
+            text=title,
+        )
+        dialog.format_secondary_text(secondary)
+        dialog.run()
+        dialog.destroy()
+
+
+class SettingsApplication(Gtk.Application):
+    """Standalone single-instance preferences window, used by --settings."""
+
+    def __init__(self):
+        super().__init__(
+            application_id="org.notifycenter.Preferences",
+            flags=Gio.ApplicationFlags.FLAGS_NONE,
+        )
+        self.dialog: PreferencesDialog | None = None
+
+    def do_activate(self) -> None:
+        if self.dialog is not None:
+            self.dialog.present()
+            return
+        dialog = PreferencesDialog(None)
+        self.dialog = dialog
+        dialog.connect("destroy", self._on_destroy)
+        dialog.run()
+
+    def _on_destroy(self, *_args) -> None:
+        self.dialog = None
+        self.quit()
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     if "--version" in argv[1:]:
         print(f"notify-center-viewer {APP_VERSION}")
         return 0
     self_test = "--self-test" in argv[1:]
+    if "--settings" in argv[1:] and not self_test:
+        return SettingsApplication().run([argv[0]])
     app = ViewerApplication(self_test=self_test)
     code = app.run([argv[0]])
     if app.self_test and app.failed:

@@ -183,6 +183,103 @@ class ViewerHelpersTest(unittest.TestCase):
             self.module.CONFIG_PATH = original
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_default_config_matches_shipped_example(self) -> None:
+        example = json.loads(
+            (HERE.parent / "config" / "config.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(self.module.DEFAULT_CONFIG, example)
+
+    def test_load_and_save_config(self) -> None:
+        root = Path(tempfile.mkdtemp(dir=self.tmp, prefix="config-"))
+        target = root / "notify-center" / "config.json"
+        original = self.module.CONFIG_PATH
+        self.module.CONFIG_PATH = target
+        try:
+            self.assertEqual(self.module.load_config(), self.module.DEFAULT_CONFIG)
+
+            self.module.save_config(
+                {
+                    "toast_enabled": True,
+                    "toast_timeout": 9,
+                    "ignore_apps": ["slack"],
+                }
+            )
+            loaded = self.module.load_config()
+            self.assertTrue(loaded["toast_enabled"])
+            self.assertEqual(loaded["toast_timeout"], 9)
+            self.assertEqual(loaded["ignore_apps"], ["slack"])
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+            # Unknown keys written by a newer version are preserved.
+            raw = json.loads(target.read_text(encoding="utf-8"))
+            raw["future_key"] = "keep me"
+            target.write_text(json.dumps(raw), encoding="utf-8")
+            self.module.save_config({"sound_enabled": True})
+            stored = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(stored["future_key"], "keep me")
+            self.assertTrue(stored["sound_enabled"])
+        finally:
+            self.module.CONFIG_PATH = original
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_parse_list_and_clamp(self) -> None:
+        self.assertEqual(
+            self.module.parse_list("Slack, Thunderbird ,, slack"),
+            ["slack", "thunderbird"],
+        )
+        self.assertEqual(self.module.parse_list(""), [])
+        self.assertEqual(self.module.clamp_int("7", 5, 1, 60), 7)
+        self.assertEqual(self.module.clamp_int(999, 5, 1, 60), 60)
+        self.assertEqual(self.module.clamp_int("nope", 5, 1, 60), 5)
+
+    def test_ignore_rule_helpers(self) -> None:
+        rules, labels = self.module.ignore_rules_for_rows(
+            [
+                ("Thunderbird", "thunderbird.desktop"),
+                ("Signal", None),
+                (None, "Slack.desktop"),
+                ("Signal", ""),
+            ]
+        )
+        self.assertEqual(rules, ["thunderbird", "signal", "slack"])
+        self.assertEqual(labels, ["Thunderbird", "Signal", "Slack.desktop"])
+
+        merged, added = self.module.merge_ignore_rules(
+            ["slack", "thunderbird"], ["thunderbird", "discord"]
+        )
+        self.assertEqual(merged, ["slack", "thunderbird", "discord"])
+        self.assertEqual(added, ["discord"])
+
+        self.assertEqual(
+            self.module.format_app_list(["A", "a", "B", "C", "D"]),
+            "A, B, C and 1 more",
+        )
+        self.assertEqual(self.module.format_app_list([]), "")
+
+    def test_read_ignored_count(self) -> None:
+        root = Path(tempfile.mkdtemp(dir=self.tmp, prefix="ignored-"))
+        target = root / "ignored.json"
+        original = self.module.IGNORED_PATH
+        self.module.IGNORED_PATH = target
+        try:
+            self.assertEqual(self.module.read_ignored_count(), 0)
+            target.write_text('{"count": 7}', encoding="utf-8")
+            self.assertEqual(self.module.read_ignored_count(), 7)
+            target.write_text('{"count": -3}', encoding="utf-8")
+            self.assertEqual(self.module.read_ignored_count(), 0)
+            target.write_text("not json", encoding="utf-8")
+            self.assertEqual(self.module.read_ignored_count(), 0)
+        finally:
+            self.module.IGNORED_PATH = original
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_format_notification_count(self) -> None:
+        fmt = self.module.format_notification_count
+        self.assertEqual(fmt(0, 0), "0 notifications")
+        self.assertEqual(fmt(1, 1), "1 notification")
+        self.assertEqual(fmt(2, 2), "2 notifications")
+        self.assertEqual(fmt(1000, 1500), "1000 of 1500 notifications")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -25,6 +25,7 @@ const APP_NAME = "notify-center";
 const DATA_DIR = GLib.build_filenamev([GLib.get_user_data_dir(), APP_NAME]);
 const SPOOL_DIR = GLib.build_filenamev([DATA_DIR, "spool"]);
 const STATUS_FILE = GLib.build_filenamev([DATA_DIR, "status.json"]);
+const IGNORED_FILE = GLib.build_filenamev([DATA_DIR, "ignored.json"]);
 const CONFIG_FILE = GLib.build_filenamev([
     GLib.get_user_config_dir(),
     APP_NAME,
@@ -216,6 +217,7 @@ NotificationCenterApplet.prototype = {
         this._hooked = false;
         this._originalNotifyForSource = null;
         this._statusMonitor = null;
+        this._configMonitor = null;
         this._timeoutId = 0;
         this._menuCount = null;
         this._lastPrune = 0;
@@ -224,8 +226,13 @@ NotificationCenterApplet.prototype = {
         this._toastMonitorId = 0;
         this._soundId = 0;
         this._soundSettings = undefined;
+        this._configExists = false;
+        this._setupItem = null;
+        this._ignoredCount = 0;
+        this._ignoredFlushId = 0;
 
         this._loadConfig();
+        this._loadIgnoredCount();
         try {
             GLib.mkdir_with_parents(SPOOL_DIR, 0o700);
         } catch (e) {
@@ -235,6 +242,7 @@ NotificationCenterApplet.prototype = {
 
         this._buildMenu(orientation);
         this._setupStatusMonitor();
+        this._setupConfigMonitor();
         this._updateBadge();
 
         this._timeoutId = GLib.timeout_add_seconds(
@@ -268,6 +276,15 @@ NotificationCenterApplet.prototype = {
             this._statusMonitor.cancel();
             this._statusMonitor = null;
         }
+        if (this._configMonitor) {
+            this._configMonitor.cancel();
+            this._configMonitor = null;
+        }
+        if (this._ignoredFlushId) {
+            GLib.source_remove(this._ignoredFlushId);
+            this._ignoredFlushId = 0;
+        }
+        this._flushIgnoredCount();
         if (this.menu) {
             try {
                 this.menu.destroy();
@@ -313,9 +330,24 @@ NotificationCenterApplet.prototype = {
         this.menu.addMenuItem(this._menuCount);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
+        // First-run hint: visible until a config file exists. Opening the
+        // preferences dialog creates one.
+        this._setupItem = new PopupMenu.PopupMenuItem(
+            "Set up notification replacement…"
+        );
+        this._setupItem.connect("activate", () => this._openPreferences());
+        this._setupItem.actor.visible = !this._configExists;
+        this.menu.addMenuItem(this._setupItem);
+
         let openItem = new PopupMenu.PopupMenuItem("Open Notification Center");
         openItem.connect("activate", () => this._openViewer());
         this.menu.addMenuItem(openItem);
+
+        let preferencesItem = new PopupMenu.PopupMenuItem(
+            "Notification preferences…"
+        );
+        preferencesItem.connect("activate", () => this._openPreferences());
+        this.menu.addMenuItem(preferencesItem);
 
         let configItem = new PopupMenu.PopupMenuItem("Open configuration file");
         configItem.connect("activate", () => this._openConfig());
@@ -333,31 +365,46 @@ NotificationCenterApplet.prototype = {
         });
     },
 
-    _openViewer: function () {
-        let candidates = [];
+    _findViewer: function () {
         let onPath = GLib.find_program_in_path(VIEWER_NAME);
         if (onPath) {
-            candidates.push(onPath);
+            return onPath;
         }
-        candidates.push(
-            GLib.build_filenamev([
-                GLib.get_home_dir(),
-                ".local",
-                "bin",
-                VIEWER_NAME,
-            ])
-        );
+        let fallback = GLib.build_filenamev([
+            GLib.get_home_dir(),
+            ".local",
+            "bin",
+            VIEWER_NAME,
+        ]);
+        if (GLib.file_test(fallback, GLib.FileTest.IS_EXECUTABLE)) {
+            return fallback;
+        }
+        return null;
+    },
 
-        for (let i = 0; i < candidates.length; i++) {
-            if (GLib.file_test(candidates[i], GLib.FileTest.IS_EXECUTABLE)) {
-                Util.spawn([candidates[i]]);
-                return;
-            }
-        }
+    _viewerMissing: function () {
         global.logError(
             "notify-center: viewer not found; reinstall with install-notify-center.sh"
         );
         this.set_applet_tooltip("Notification Center — viewer is not installed");
+    },
+
+    _openViewer: function () {
+        let viewer = this._findViewer();
+        if (!viewer) {
+            this._viewerMissing();
+            return;
+        }
+        Util.spawn([viewer]);
+    },
+
+    _openPreferences: function () {
+        let viewer = this._findViewer();
+        if (!viewer) {
+            this._viewerMissing();
+            return;
+        }
+        Util.spawn([viewer, "--settings"]);
     },
 
     _openConfig: function () {
@@ -422,6 +469,14 @@ NotificationCenterApplet.prototype = {
             soundFile:
                 typeof raw.sound_file === "string" ? raw.sound_file.trim() : "",
         };
+        this._configExists = GLib.file_test(CONFIG_FILE, GLib.FileTest.EXISTS);
+        this._updateSetupItem();
+    },
+
+    _updateSetupItem: function () {
+        if (this._setupItem) {
+            this._setupItem.actor.visible = !this._configExists;
+        }
     },
 
     _isIgnored: function (name) {
@@ -521,6 +576,7 @@ NotificationCenterApplet.prototype = {
         let app = asString(ndata.appName);
         let desktopEntry = asString(hints["desktop-entry"]);
         if (this._isIgnored(app) || this._isIgnored(desktopEntry)) {
+            this._noteIgnored();
             return false;
         }
 
@@ -616,6 +672,57 @@ NotificationCenterApplet.prototype = {
         } catch (e) {
             global.logError(e);
             return false;
+        }
+    },
+
+    // -- ignored notifications -------------------------------------------
+
+    _loadIgnoredCount: function () {
+        let data = readJson(IGNORED_FILE, null);
+        if (data && isFinite(Number(data.count))) {
+            this._ignoredCount = Math.max(0, Math.round(Number(data.count)));
+        }
+    },
+
+    _noteIgnored: function () {
+        this._ignoredCount += 1;
+        if (this._ignoredFlushId) {
+            return;
+        }
+        this._ignoredFlushId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            2,
+            () => {
+                this._ignoredFlushId = 0;
+                this._flushIgnoredCount();
+                return GLib.SOURCE_REMOVE;
+            }
+        );
+    },
+
+    _flushIgnoredCount: function () {
+        try {
+            GLib.mkdir_with_parents(DATA_DIR, 0o700);
+            let payload = JSON.stringify({
+                count: this._ignoredCount,
+                updated: Math.floor(Date.now() / 1000),
+            });
+            if (!GLib.file_set_contents(IGNORED_FILE, payload)) {
+                global.logError("notify-center: cannot write " + IGNORED_FILE);
+                return;
+            }
+            try {
+                Gio.File.new_for_path(IGNORED_FILE).set_attribute_uint32(
+                    "unix::mode",
+                    0o600,
+                    Gio.FileQueryInfoFlags.NONE,
+                    null
+                );
+            } catch (e) {
+                global.logError(e);
+            }
+        } catch (e) {
+            global.logError(e);
         }
     },
 
@@ -1091,6 +1198,38 @@ NotificationCenterApplet.prototype = {
                         name = "";
                     }
                     if (name === "status.json") {
+                        this._updateBadge();
+                    }
+                }
+            );
+        } catch (e) {
+            global.logError(e);
+        }
+    },
+
+    // The viewer writes config.json atomically (temporary file + rename), so
+    // watch the directory rather than the file itself and filter by name.
+    _setupConfigMonitor: function () {
+        try {
+            let directory = GLib.build_filenamev([
+                GLib.get_user_config_dir(),
+                APP_NAME,
+            ]);
+            GLib.mkdir_with_parents(directory, 0o700);
+            this._configMonitor = Gio.File.new_for_path(
+                directory
+            ).monitor_directory(Gio.FileMonitorFlags.NONE, null);
+            this._configMonitor.connect(
+                "changed",
+                (monitor, file, otherFile, eventType) => {
+                    let name = "";
+                    try {
+                        name = file ? file.get_basename() : "";
+                    } catch (e) {
+                        name = "";
+                    }
+                    if (name === "config.json") {
+                        this._loadConfig();
                         this._updateBadge();
                     }
                 }

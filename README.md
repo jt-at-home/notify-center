@@ -14,17 +14,20 @@ notification, search it, mark things read, and get an unread badge in the panel.
 ## What it does
 
 - **Applet** — shows an unread count in the panel. Click it for a menu with
-  *Open Notification Center* and *Open configuration file*; middle-click opens
-  the viewer directly. If the collector is not running, the icon switches to a
-  warning icon and the tooltip explains. With `dismiss_after_capture`, it also
-  removes each recorded notification from Cinnamon's own popup and tray.
-  Optionally (`toast_enabled`, `sound_enabled`) it can instead show its own
-  notification popup and play a sound.
+  *Open Notification Center*, *Notification preferences…* and *Open
+  configuration file*; middle-click opens the viewer directly. Until a config
+  file exists, a *Set up notification replacement…* item is shown first. If the
+  collector is not running, the icon switches to a warning icon and the tooltip
+  explains. With `dismiss_after_capture`, it also removes each recorded
+  notification from Cinnamon's own popup and tray. Optionally (`toast_enabled`,
+  `sound_enabled`) it can instead show its own notification popup and play a
+  sound.
 - **Viewer** — search across app, title and body; filter by app, category or
-  unread; mark read/unread, mark all read, delete or clear all; export the
-  current view as JSON. Launch it from the application menu or
-  `notify-center-viewer`; double-click marks a notification read, and launching
-  again focuses the existing window instead of opening a second copy.
+  unread; mark read/unread, mark all read, delete, **Ignore App** for selected
+  notifications, or clear all; export the current view as JSON. **Preferences**
+  edits popups, sound, Cinnamon replacement and history limits; double-click
+  marks a notification read, and launching again focuses the existing window
+  instead of opening a second copy.
 - **Collector** — a small `systemd --user` service that turns spooled
   notifications into a local SQLite history with retention and size limits.
 
@@ -98,12 +101,48 @@ The installer never overwrites an existing
 
 ---
 
+## Replace Cinnamon's notifications
+
+Cinnamon keeps showing its own notification popups until they are turned off.
+notify-center can take over with its own popups, sound and history:
+
+1. Right-click the applet → **Notification preferences…** (or open the viewer
+   and click **Preferences**).
+2. On the **Popups** tab, choose **notify-center popups (recommended)**.
+3. Click **Save**.
+
+That enables notify-center's popups (and sound, if selected), makes it remove
+recorded notifications from Cinnamon's tray, and disables Cinnamon's own
+notification popups for your user. The dialog shows whether Cinnamon's popups
+are currently on and what saving will do.
+
+The same tab also offers **Cinnamon's own notification popups** (notify-center
+only records) and **No popups (record silently)** (neither system shows a
+popup). The three choices map to the keys below:
+
+```json
+{
+  "dismiss_after_capture": true,
+  "toast_enabled": true,
+  "sound_enabled": true
+}
+```
+
+`dismiss_after_capture` only matters while Cinnamon's popups are enabled; with
+them off, notify-center's own popups are the only ones shown. Changes apply to
+the next notification; the applet reloads the config within 30 seconds.
+
+---
+
 ## Configuration
 
+Most settings are available in the **Preferences** dialog (viewer) and
+**Notification preferences…** (applet); the raw values live in
 `~/.config/notify-center/config.json`:
 
 If the file does not exist yet, the applet's *Open configuration file* item or
-the viewer's *Settings* button creates it with the defaults below (mode 0600).
+the viewer's *Preferences* → *Edit configuration file* creates it with the
+defaults below (mode 0600).
 
 ```json
 {
@@ -142,6 +181,14 @@ notification remains searchable and contributes to the unread count even after
 its popup and tray item are gone. The `persistent_*` lists are strictly opt-in
 for the cases where you also want a notification parked in Cinnamon's tray.
 They do not affect recording or the unread count.
+
+**Ignoring apps from the viewer.** Select one or more notifications and click
+**Ignore App**. The app (and its desktop-entry id) is added to `ignore_apps`;
+future notifications from it are not recorded, toasted, sounded or removed from
+Cinnamon. Notifications already in the history stay. The viewer status bar
+shows a running total of notifications skipped by the ignore list
+(`N ignored`, stored in `ignored.json`), and **Preferences → History** lets you
+review or edit the list.
 
 `dismiss_after_capture` only applies to notifications the applet actually
 recorded: ignored apps and ignored transient notifications are left to Cinnamon
@@ -192,6 +239,7 @@ stays in Cinnamon.
 ~/.local/share/cinnamon/applets/notification-center@jt-at-home/
 ~/.local/share/notify-center/notifications.db       # 0600
 ~/.local/share/notify-center/status.json            # 0600
+~/.local/share/notify-center/ignored.json           # 0600, ignored counter
 ~/.local/share/notify-center/spool/                 # 0700
 ~/.local/share/notify-center/failed/                # bad spool files
 ~/.config/notify-center/config.json
@@ -267,6 +315,18 @@ environment may use a different path.
   freedesktop API) are not seen; the applet only sees app notifications.
 - History starts when the applet is added. There is no backfill of older
   notifications.
+
+**Two popups for every notification**
+
+Cinnamon's own popups are still enabled. Open **Notification preferences…**,
+select **notify-center popups (recommended)** (or **No popups**), then
+**Save**.
+
+**An ignored app still has old notifications**
+
+**Ignore App** affects future notifications only; existing history is kept.
+The `N ignored` counter in the status bar is the number skipped since the
+counter file was created.
 
 **Cinnamon's own popups never show up**
 

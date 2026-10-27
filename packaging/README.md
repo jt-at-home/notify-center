@@ -11,6 +11,10 @@ comes from `applet/metadata.json` (the script refuses to build if the viewer's
 `APP_VERSION` differs) and the revision defaults to `1`
 (`REVISION=2 ./packaging/build-deb.sh` for another build).
 
+When you rebuild after code changes without bumping the app version, bump the
+revision too (or set a new version). Otherwise `apt install` sees the same
+version already installed and refuses to upgrade to the new contents.
+
 ## What the package installs
 
 ```
