@@ -15,18 +15,17 @@ notification, search it, mark things read, and get an unread badge in the panel.
 
 - **Applet** — shows an unread count in the panel. Click it for a menu with
   *Open Notification Center* and *Notification preferences…*; middle-click
-  opens the viewer directly. Until a config file exists, a *Review notification
-  settings…* item is shown first. If the collector is not running, the icon
-  switches to a warning icon and the tooltip explains. With
-  `dismiss_after_capture`, it also removes each recorded notification from
-  Cinnamon's own popup and tray; `toast_enabled` and `sound_enabled` show its
-  own popup and play a sound (both on by default for new installs).
+  opens the viewer directly. If the collector is not running, the icon switches
+  to a warning icon and the tooltip explains. With `dismiss_after_capture`, it
+  also removes each recorded notification from Cinnamon's own popup and tray;
+  `toast_enabled` and `sound_enabled` show its own popup and play a sound (both
+  on by default for new installs).
 - **Viewer** — search across app, title and body; filter by app, category or
   unread; mark read/unread, mark all read, delete, **Ignore App** for selected
   notifications, or clear all; export the current view as JSON. **Preferences**
-  edits popups, sound, Cinnamon replacement and history limits; double-click
-  marks a notification read, and launching again focuses the existing window
-  instead of opening a second copy.
+  edits popups, sound, Cinnamon replacement, history limits and the ignored /
+  persistent lists; double-click marks a notification read, and launching again
+  focuses the existing window instead of opening a second copy.
 - **Collector** — a small `systemd --user` service that turns spooled
   notifications into a local SQLite history with retention and size limits.
 
@@ -36,10 +35,10 @@ Cinnamon already implements `org.freedesktop.Notifications`, so nothing outside
 the shell can observe notifications. This applet hooks notification delivery
 inside the Cinnamon applet (same JS process as the shell), writes one small
 JSON file per notification, and the Python collector turns those files into
-SQLite. Cinnamon's native notification UI is untouched by default; the optional
-`dismiss_after_capture` setting closes a notification in Cinnamon after it has
-been recorded, and `toast_enabled` / `sound_enabled` make the applet draw and
-play its own notification instead.
+SQLite. New installs default to replacement: the applet draws its own toast and
+plays a sound, and Cinnamon's native popups are turned off. Existing configs
+can keep Cinnamon's popups (record-only), or use `dismiss_after_capture` to
+close them once recorded.
 
 ```
 application
@@ -109,6 +108,13 @@ When installed from a terminal with `sudo`, the package starts the collector in
 your session immediately. A GUI installer that does not expose the user starts
 it at the next login instead. The applet still has to be added to the panel
 once, as above.
+
+The package installs system-wide under `/usr/bin`, `/usr/lib/notify-center`,
+`/usr/share/cinnamon/applets`, `/usr/lib/systemd/user` and
+`/etc/xdg/autostart`. User data and configuration stay in the same
+`~/.local/share/notify-center` and `~/.config/notify-center` paths. Remove it
+with `sudo apt purge notify-center`; `dpkg` does not delete your history or
+config, so remove those directories yourself if you want them gone.
 
 ---
 
@@ -254,7 +260,7 @@ stays in Cinnamon.
 ~/.local/share/notify-center/ignored.json           # 0600, ignored counter
 ~/.local/share/notify-center/spool/                 # 0700
 ~/.local/share/notify-center/failed/                # bad spool files
-~/.config/notify-center/config.json
+~/.config/notify-center/config.json                 # created on Save/Edit
 ~/.config/systemd/user/notify-center-collector.service
 ~/.local/share/applications/notify-center.desktop
 ```
@@ -293,6 +299,7 @@ Viewer:
 
 ```bash
 notify-center-viewer
+notify-center-viewer --settings    # open Preferences directly
 notify-center-viewer --version
 ```
 
@@ -342,9 +349,10 @@ counter file was created.
 
 **Cinnamon's own popups never show up**
 
-Check `dismiss_after_capture` in the config. When it is `true`, every
-notification the applet records is closed in Cinnamon immediately after
-capture; set it to `false` to get Cinnamon's normal popups and tray back.
+New installs turn Cinnamon's popups off automatically. Open **Notification
+preferences…** and choose **Cinnamon's own notification popups**, then **Save**.
+Also check `dismiss_after_capture`: when it is `true`, every notification the
+applet records is closed in Cinnamon immediately after capture.
 
 **notify-center's toasts never show up**
 
@@ -386,8 +394,8 @@ Confirm the files are in
 ## Privacy
 
 Notification bodies can contain message text, email subjects and 2FA codes. The
-database and status file are created with mode `0600`; the data and spool
-directories use `0700`. Nothing is sent off the machine. Set
+database, status file, ignored counter and config are created with mode `0600`;
+the data and spool directories use `0700`. Nothing is sent off the machine. Set
 `retention_days` and `max_rows` to keep history small, or run
 `uninstall-notify-center.sh --purge` to remove it entirely.
 
