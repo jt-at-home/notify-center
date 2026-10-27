@@ -117,8 +117,7 @@ once, as above.
 **New installs use notify-center by default.** When the applet is added for the
 first time and no config file exists, it enables notify-center's popups and
 sound and turns Cinnamon's own notification popups off, so there are no
-duplicate popups. The applet menu shows **Review notification settings…** until
-a config file exists.
+duplicate popups.
 
 To switch back, or choose another behavior:
 

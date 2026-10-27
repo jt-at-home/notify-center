@@ -531,18 +531,8 @@ check(
 
 const savedConfig = readJsonFile(CONFIG_FILE);
 
-// First-run hint and preferences entry.
-applet._loadConfig();
-check(
-    "setup hint hidden when config exists",
-    applet._setupItem.actor.visible === false
-);
 Gio.File.new_for_path(CONFIG_FILE).delete(null);
 applet._loadConfig();
-check(
-    "setup hint shown when config is missing",
-    applet._setupItem.actor.visible === true
-);
 check(
     "missing config defaults to notify-center",
     applet._config.toastEnabled === true &&
@@ -551,10 +541,6 @@ check(
 );
 writeJsonFile(CONFIG_FILE, savedConfig);
 applet._loadConfig();
-check(
-    "setup hint hidden after the config is restored",
-    applet._setupItem.actor.visible === false
-);
 
 // An existing config from an older version keeps the opt-in defaults for keys
 // it does not have.

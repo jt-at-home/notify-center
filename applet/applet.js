@@ -208,7 +208,6 @@ NotificationCenterApplet.prototype = {
         this._soundId = 0;
         this._soundSettings = undefined;
         this._configExists = false;
-        this._setupItem = null;
         this._ignoredCount = 0;
         this._ignoredFlushId = 0;
         this._disabledCinnamonPopups = false;
@@ -319,15 +318,6 @@ NotificationCenterApplet.prototype = {
         this.menu.addMenuItem(this._menuCount);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // First-run hint: visible until a config file exists. New installs
-        // already use notify-center defaults; this points at the settings.
-        this._setupItem = new PopupMenu.PopupMenuItem(
-            "Review notification settings…"
-        );
-        this._setupItem.connect("activate", () => this._openPreferences());
-        this._setupItem.actor.visible = !this._configExists;
-        this.menu.addMenuItem(this._setupItem);
-
         let openItem = new PopupMenu.PopupMenuItem("Open Notification Center");
         openItem.connect("activate", () => this._openViewer());
         this.menu.addMenuItem(openItem);
@@ -427,7 +417,6 @@ NotificationCenterApplet.prototype = {
                 typeof raw.sound_file === "string" ? raw.sound_file.trim() : "",
         };
         this._configExists = !missing;
-        this._updateSetupItem();
     },
 
     // New installs default to notify-center popups. Turn Cinnamon's own
@@ -464,12 +453,6 @@ NotificationCenterApplet.prototype = {
             }
         } catch (e) {
             global.logError(e);
-        }
-    },
-
-    _updateSetupItem: function () {
-        if (this._setupItem) {
-            this._setupItem.actor.visible = !this._configExists;
         }
     },
 
