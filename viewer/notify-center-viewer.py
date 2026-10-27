@@ -65,11 +65,11 @@ DEFAULT_CONFIG = {
     "ignore_apps": [],
     "persistent_apps": [],
     "persistent_categories": [],
-    "dismiss_after_capture": False,
-    "toast_enabled": False,
+    "dismiss_after_capture": True,
+    "toast_enabled": True,
     "toast_timeout": 5,
     "toast_position": "top-right",
-    "sound_enabled": False,
+    "sound_enabled": True,
     "sound_file": "",
 }
 
@@ -89,15 +89,27 @@ def ensure_config_file() -> Path:
 
 
 def load_config() -> dict:
-    """Return the config merged over the defaults; never raises."""
+    """Return the config merged over the defaults; never raises.
+
+    A missing config gets the new-install defaults (notify-center popups and
+    sound on). A config written by an older version keeps the previous opt-in
+    behavior for keys it does not contain.
+    """
+    missing = False
     try:
         raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raw = {}
+        missing = True
     if not isinstance(raw, dict):
         raw = {}
+        missing = True
     config = dict(DEFAULT_CONFIG)
     config.update(raw)
+    if not missing:
+        for key in ("dismiss_after_capture", "toast_enabled", "sound_enabled"):
+            if key not in raw:
+                config[key] = False
     return config
 
 
@@ -1457,7 +1469,6 @@ class PreferencesDialog(Gtk.Dialog):
     """Preferences for popups, sound and history limits."""
 
     def __init__(self, parent: Gtk.Window | None = None):
-        ensure_config_file()
         super().__init__(
             title="Notification preferences",
             transient_for=parent,
@@ -1634,13 +1645,6 @@ class PreferencesDialog(Gtk.Dialog):
         edit_button.set_tooltip_text("Open the raw JSON file in the default editor")
         edit_button.connect("clicked", self._on_edit_file)
         footer.pack_start(edit_button, False, False, 0)
-
-        test_button = Gtk.Button(label="Send test notification")
-        test_button.set_tooltip_text(
-            "Send a notification using the currently saved settings"
-        )
-        test_button.connect("clicked", self._on_test_notification)
-        footer.pack_end(test_button, False, False, 0)
         parent.pack_start(footer, False, False, 0)
 
     # -- state ------------------------------------------------------------
@@ -1691,15 +1695,6 @@ class PreferencesDialog(Gtk.Dialog):
             subprocess.Popen(["xdg-open", str(target)], close_fds=True)
         except OSError as exc:
             self._message("Cannot open the config file", str(exc))
-
-    def _on_test_notification(self, *_args) -> None:
-        try:
-            subprocess.Popen(
-                ["notify-send", "Notification Center", "Test notification"],
-                close_fds=True,
-            )
-        except OSError as exc:
-            self._message("Cannot send a test notification", str(exc))
 
     def _collect(self) -> dict:
         mode = self._mode()

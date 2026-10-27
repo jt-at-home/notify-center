@@ -160,25 +160,6 @@ function toastPosition(value) {
     return TOAST_POSITIONS.indexOf(text) === -1 ? "top-right" : text;
 }
 
-// Mirrors the default config shipped in config/config.json. Written on first
-// use so "Open configuration file" works on a clean install.
-function defaultConfig() {
-    return {
-        retention_days: 30,
-        max_rows: 5000,
-        ignore_transient: true,
-        ignore_apps: [],
-        persistent_apps: [],
-        persistent_categories: [],
-        dismiss_after_capture: false,
-        toast_enabled: false,
-        toast_timeout: 5,
-        toast_position: "top-right",
-        sound_enabled: false,
-        sound_file: "",
-    };
-}
-
 // ---------------------------------------------------------------------------
 
 function NotificationCenterApplet(metadata, orientation, panelHeight, instanceId) {
@@ -207,11 +188,11 @@ NotificationCenterApplet.prototype = {
             ignoreApps: [],
             persistentApps: [],
             persistentCategories: [],
-            dismissAfterCapture: false,
-            toastEnabled: false,
+            dismissAfterCapture: true,
+            toastEnabled: true,
             toastTimeout: 5,
             toastPosition: "top-right",
-            soundEnabled: false,
+            soundEnabled: true,
             soundFile: "",
         };
         this._hooked = false;
@@ -230,8 +211,12 @@ NotificationCenterApplet.prototype = {
         this._setupItem = null;
         this._ignoredCount = 0;
         this._ignoredFlushId = 0;
+        this._disabledCinnamonPopups = false;
 
         this._loadConfig();
+        if (!this._configExists) {
+            this._disableCinnamonPopupsOnFirstRun();
+        }
         this._loadIgnoredCount();
         try {
             GLib.mkdir_with_parents(SPOOL_DIR, 0o700);
@@ -285,6 +270,10 @@ NotificationCenterApplet.prototype = {
             this._ignoredFlushId = 0;
         }
         this._flushIgnoredCount();
+        // If we turned Cinnamon's popups off for a fresh install and the user
+        // removes the applet before saving any config, put them back: otherwise
+        // removing the applet would leave Cinnamon with no notifications at all.
+        this._restoreCinnamonPopupsOnRemoval();
         if (this.menu) {
             try {
                 this.menu.destroy();
@@ -330,10 +319,10 @@ NotificationCenterApplet.prototype = {
         this.menu.addMenuItem(this._menuCount);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // First-run hint: visible until a config file exists. Opening the
-        // preferences dialog creates one.
+        // First-run hint: visible until a config file exists. New installs
+        // already use notify-center defaults; this points at the settings.
         this._setupItem = new PopupMenu.PopupMenuItem(
-            "Set up notification replacement…"
+            "Review notification settings…"
         );
         this._setupItem.connect("activate", () => this._openPreferences());
         this._setupItem.actor.visible = !this._configExists;
@@ -348,10 +337,6 @@ NotificationCenterApplet.prototype = {
         );
         preferencesItem.connect("activate", () => this._openPreferences());
         this.menu.addMenuItem(preferencesItem);
-
-        let configItem = new PopupMenu.PopupMenuItem("Open configuration file");
-        configItem.connect("activate", () => this._openConfig());
-        this.menu.addMenuItem(configItem);
 
         let aboutItem = new PopupMenu.PopupMenuItem("About Notification Center");
         aboutItem.connect("activate", () => this._openAbout());
@@ -407,39 +392,6 @@ NotificationCenterApplet.prototype = {
         Util.spawn([viewer, "--settings"]);
     },
 
-    _openConfig: function () {
-        try {
-            if (!GLib.file_test(CONFIG_FILE, GLib.FileTest.EXISTS)) {
-                let directory = GLib.build_filenamev([
-                    GLib.get_user_config_dir(),
-                    APP_NAME,
-                ]);
-                GLib.mkdir_with_parents(directory, 0o700);
-                let contents = JSON.stringify(defaultConfig(), null, 2) + "\n";
-                if (!GLib.file_set_contents(CONFIG_FILE, contents)) {
-                    throw new Error("cannot write " + CONFIG_FILE);
-                }
-                try {
-                    Gio.File.new_for_path(CONFIG_FILE).set_attribute_uint32(
-                        "unix::mode",
-                        0o600,
-                        Gio.FileQueryInfoFlags.NONE,
-                        null
-                    );
-                } catch (e) {
-                    global.logError(e);
-                }
-            }
-        } catch (e) {
-            global.logError(e);
-        }
-
-        let target = GLib.file_test(CONFIG_FILE, GLib.FileTest.EXISTS)
-            ? CONFIG_FILE
-            : GLib.build_filenamev([GLib.get_user_config_dir(), APP_NAME]);
-        Util.spawn(["xdg-open", target]);
-    },
-
     _openAbout: function () {
         Util.spawn(["xdg-open", PROJECT_URL]);
     },
@@ -448,7 +400,8 @@ NotificationCenterApplet.prototype = {
 
     _loadConfig: function () {
         let raw = readJson(CONFIG_FILE, null);
-        if (!raw || typeof raw !== "object") {
+        let missing = !raw || typeof raw !== "object";
+        if (missing) {
             raw = {};
         }
         this._config = {
@@ -460,17 +413,58 @@ NotificationCenterApplet.prototype = {
                 "persistent_categories",
                 "categories"
             ),
-            // Opt-in and deliberately strict: only a JSON true enables it.
-            dismissAfterCapture: raw.dismiss_after_capture === true,
-            toastEnabled: raw.toast_enabled === true,
+            // New installs default to notify-center; configs created by an
+            // older version keep the previous opt-in behavior until the user
+            // changes the setting.
+            dismissAfterCapture: missing
+                ? true
+                : raw.dismiss_after_capture === true,
+            toastEnabled: missing ? true : raw.toast_enabled === true,
             toastTimeout: numberInRange(raw.toast_timeout, 5, 1, 60),
             toastPosition: toastPosition(raw.toast_position),
-            soundEnabled: raw.sound_enabled === true,
+            soundEnabled: missing ? true : raw.sound_enabled === true,
             soundFile:
                 typeof raw.sound_file === "string" ? raw.sound_file.trim() : "",
         };
-        this._configExists = GLib.file_test(CONFIG_FILE, GLib.FileTest.EXISTS);
+        this._configExists = !missing;
         this._updateSetupItem();
+    },
+
+    // New installs default to notify-center popups. Turn Cinnamon's own
+    // popups off once so the default does not produce duplicates; choosing
+    // Cinnamon's popups in Preferences turns them back on.
+    _disableCinnamonPopupsOnFirstRun: function () {
+        try {
+            let settings = new Gio.Settings({
+                schema_id: "org.cinnamon.desktop.notifications",
+            });
+            if (settings.get_boolean("display-notifications")) {
+                settings.set_boolean("display-notifications", false);
+                this._disabledCinnamonPopups = true;
+            }
+        } catch (e) {
+            global.logError(e);
+        }
+    },
+
+    _restoreCinnamonPopupsOnRemoval: function () {
+        if (!this._disabledCinnamonPopups) {
+            return;
+        }
+        if (GLib.file_test(CONFIG_FILE, GLib.FileTest.EXISTS)) {
+            // The user saved settings; keep whatever they chose.
+            return;
+        }
+        try {
+            let settings = new Gio.Settings({
+                schema_id: "org.cinnamon.desktop.notifications",
+            });
+            if (!settings.get_boolean("display-notifications")) {
+                settings.set_boolean("display-notifications", true);
+            }
+        } catch (e) {
+            global.logError(e);
+        }
     },
 
     _updateSetupItem: function () {

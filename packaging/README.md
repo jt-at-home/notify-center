@@ -37,7 +37,9 @@ Dependencies: `python3`, `python3-gi`, `gir1.2-gtk-3.0`. Recommends
 ## How the collector starts
 
 The systemd user unit is shipped but **not enabled** (a package cannot enable a
-per-user unit from `postinst`). Instead, `/etc/xdg/autostart` starts
+per-user unit from `postinst`). `postinst` starts it for the installing user
+when the package is installed from a terminal with `sudo` (or via `pkexec`, when
+`PKEXEC_UID` is available); otherwise `/etc/xdg/autostart` starts
 `notify-center-collector-autostart` at login, which:
 
 1. imports any custom `XDG_DATA_HOME`/`XDG_CONFIG_HOME` into the systemd user

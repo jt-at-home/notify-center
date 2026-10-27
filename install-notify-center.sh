@@ -99,8 +99,7 @@ install -d -m 0700 "$CONFIG_DIR"
 if [ -e "$CONFIG_DIR/config.json" ]; then
     say "Keeping existing config: ${CONFIG_DIR}/config.json"
 else
-    install -m 0600 "${SCRIPT_DIR}/config/config.json" "$CONFIG_DIR/config.json"
-    say "Installed default config: ${CONFIG_DIR}/config.json"
+    say "No config file yet; notify-center will use its built-in defaults."
 fi
 
 install -d -m 0755 "$APPLET_DIR"

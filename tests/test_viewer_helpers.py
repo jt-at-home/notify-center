@@ -197,6 +197,16 @@ class ViewerHelpersTest(unittest.TestCase):
         try:
             self.assertEqual(self.module.load_config(), self.module.DEFAULT_CONFIG)
 
+            # A config from an older version keeps the opt-in defaults for
+            # keys it does not contain.
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('{"retention_days": 7}', encoding="utf-8")
+            legacy = self.module.load_config()
+            self.assertEqual(legacy["retention_days"], 7)
+            self.assertFalse(legacy["toast_enabled"])
+            self.assertFalse(legacy["sound_enabled"])
+            self.assertFalse(legacy["dismiss_after_capture"])
+
             self.module.save_config(
                 {
                     "toast_enabled": True,

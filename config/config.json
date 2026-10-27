@@ -5,10 +5,10 @@
   "ignore_apps": [],
   "persistent_apps": [],
   "persistent_categories": [],
-  "dismiss_after_capture": false,
-  "toast_enabled": false,
+  "dismiss_after_capture": true,
+  "toast_enabled": true,
   "toast_timeout": 5,
   "toast_position": "top-right",
-  "sound_enabled": false,
+  "sound_enabled": true,
   "sound_file": ""
 }

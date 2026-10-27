@@ -14,14 +14,13 @@ notification, search it, mark things read, and get an unread badge in the panel.
 ## What it does
 
 - **Applet** — shows an unread count in the panel. Click it for a menu with
-  *Open Notification Center*, *Notification preferences…* and *Open
-  configuration file*; middle-click opens the viewer directly. Until a config
-  file exists, a *Set up notification replacement…* item is shown first. If the
-  collector is not running, the icon switches to a warning icon and the tooltip
-  explains. With `dismiss_after_capture`, it also removes each recorded
-  notification from Cinnamon's own popup and tray. Optionally (`toast_enabled`,
-  `sound_enabled`) it can instead show its own notification popup and play a
-  sound.
+  *Open Notification Center* and *Notification preferences…*; middle-click
+  opens the viewer directly. Until a config file exists, a *Review notification
+  settings…* item is shown first. If the collector is not running, the icon
+  switches to a warning icon and the tooltip explains. With
+  `dismiss_after_capture`, it also removes each recorded notification from
+  Cinnamon's own popup and tray; `toast_enabled` and `sound_enabled` show its
+  own popup and play a sound (both on by default for new installs).
 - **Viewer** — search across app, title and body; filter by app, category or
   unread; mark read/unread, mark all read, delete, **Ignore App** for selected
   notifications, or clear all; export the current view as JSON. **Preferences**
@@ -96,29 +95,44 @@ is unavailable, install with `--no-service` and start the collector manually:
 ~/.local/bin/notify-center-collector &
 ```
 
-The installer never overwrites an existing
-`~/.config/notify-center/config.json`, and it refuses to run as root.
+The installer does not create `~/.config/notify-center/config.json`; a new
+install uses the built-in defaults until you save Preferences. It never
+overwrites an existing config, and it refuses to run as root.
+
+### Debian package
+
+```bash
+sudo apt install ./notify-center_<version>_all.deb
+```
+
+When installed from a terminal with `sudo`, the package starts the collector in
+your session immediately. A GUI installer that does not expose the user starts
+it at the next login instead. The applet still has to be added to the panel
+once, as above.
 
 ---
 
 ## Replace Cinnamon's notifications
 
-Cinnamon keeps showing its own notification popups until they are turned off.
-notify-center can take over with its own popups, sound and history:
+**New installs use notify-center by default.** When the applet is added for the
+first time and no config file exists, it enables notify-center's popups and
+sound and turns Cinnamon's own notification popups off, so there are no
+duplicate popups. The applet menu shows **Review notification settings…** until
+a config file exists.
+
+To switch back, or choose another behavior:
 
 1. Right-click the applet → **Notification preferences…** (or open the viewer
    and click **Preferences**).
-2. On the **Popups** tab, choose **notify-center popups (recommended)**.
+2. On the **Popups** tab choose:
+   - **Cinnamon's own notification popups** — notify-center only records;
+   - **notify-center popups (recommended)** — notify-center shows them and
+     Cinnamon's are turned off;
+   - **No popups (record silently)** — neither shows anything.
 3. Click **Save**.
 
-That enables notify-center's popups (and sound, if selected), makes it remove
-recorded notifications from Cinnamon's tray, and disables Cinnamon's own
-notification popups for your user. The dialog shows whether Cinnamon's popups
-are currently on and what saving will do.
-
-The same tab also offers **Cinnamon's own notification popups** (notify-center
-only records) and **No popups (record silently)** (neither system shows a
-popup). The three choices map to the keys below:
+The choices map to the keys below; a config created by an older version keeps
+the previous off defaults for keys it does not contain:
 
 ```json
 {
@@ -129,8 +143,8 @@ popup). The three choices map to the keys below:
 ```
 
 `dismiss_after_capture` only matters while Cinnamon's popups are enabled; with
-them off, notify-center's own popups are the only ones shown. Changes apply to
-the next notification; the applet reloads the config within 30 seconds.
+them off, notify-center's own popups are the only ones shown. Changes apply
+immediately; the applet watches the config file.
 
 ---
 
@@ -140,9 +154,8 @@ Most settings are available in the **Preferences** dialog (viewer) and
 **Notification preferences…** (applet); the raw values live in
 `~/.config/notify-center/config.json`:
 
-If the file does not exist yet, the applet's *Open configuration file* item or
-the viewer's *Preferences* → *Edit configuration file* creates it with the
-defaults below (mode 0600).
+If the file does not exist yet, saving **Preferences** (or using **Edit
+configuration file**) creates it with the defaults below (mode 0600).
 
 ```json
 {
@@ -152,11 +165,11 @@ defaults below (mode 0600).
   "ignore_apps": [],
   "persistent_apps": [],
   "persistent_categories": [],
-  "dismiss_after_capture": false,
-  "toast_enabled": false,
+  "dismiss_after_capture": true,
+  "toast_enabled": true,
   "toast_timeout": 5,
   "toast_position": "top-right",
-  "sound_enabled": false,
+  "sound_enabled": true,
   "sound_file": ""
 }
 ```
@@ -169,11 +182,11 @@ defaults below (mode 0600).
 | `ignore_apps` | applet + collector | Case-insensitive app names or `.desktop` ids that should not be recorded. |
 | `persistent_apps` | applet | Optional. Apps whose notifications should **not** auto-expire (stay in Cinnamon's tray until dismissed). Matches app name or desktop-entry id. Empty by default. |
 | `persistent_categories` | applet | Optional. Same, by freedesktop category. A rule matches the category or its prefix (`im` matches `im.received`). Empty by default. |
-| `dismiss_after_capture` | applet | Optional, default `false`. After a notification is recorded, remove it from Cinnamon's popup and message tray so the history is the only place it lives. |
-| `toast_enabled` | applet | Optional, default `false`. Show notify-center's own popup for each recorded notification. Drawn by the applet, so it is independent of Cinnamon's notification display setting. |
+| `dismiss_after_capture` | applet | Default `true` for new installs. After a notification is recorded, remove it from Cinnamon's popup and message tray so the history is the only place it lives. Older configs without the key keep `false`. |
+| `toast_enabled` | applet | Default `true` for new installs. Show notify-center's own popup for each recorded notification. Drawn by the applet, so it is independent of Cinnamon's notification display setting. Older configs without the key keep `false`. |
 | `toast_timeout` | applet | Seconds a toast stays on screen (1–60). Default `5`. |
 | `toast_position` | applet | `top-right` (default), `bottom-right`, `top-left` or `bottom-left`. |
-| `sound_enabled` | applet | Optional, default `false`. Play a sound for each recorded notification. |
+| `sound_enabled` | applet | Default `true` for new installs. Play a sound for each recorded notification. Older configs without the key keep `false`. |
 | `sound_file` | applet | Optional absolute path to a sound file. Empty uses the desktop's configured notification sound, then the freedesktop `message-new-instant` theme sound. |
 
 History and the unread badge are the primary safety net: every recorded
@@ -195,12 +208,12 @@ recorded: ignored apps and ignored transient notifications are left to Cinnamon
 unchanged. A matching `persistent_*` rule wins, so those notifications stay
 visible. Dismissal happens immediately after Cinnamon queues the notification,
 which means its popup may not be visible at all; the history and unread count
-still record it. Only a JSON `true` enables it.
+still record it.
 
 `toast_enabled` and `sound_enabled` are the applet's own replacement for
 Cinnamon's notification UI. Toasts are drawn by the applet, not by Cinnamon, so
-they keep working when Cinnamon's own notifications are disabled. That is the
-recommended way to run the applet as a full replacement:
+they keep working when Cinnamon's own notifications are disabled. New installs
+default to this mode; the Preferences dialog sets these keys together:
 
 ```json
 {
@@ -214,8 +227,8 @@ If Cinnamon's notifications are left enabled, either enable
 `dismiss_after_capture` too or leave `toast_enabled` off, otherwise both popups
 appear. Toasts stack up to four, disappear after `toast_timeout`, and open the
 viewer when clicked. Notifications carrying the `suppress-sound` hint never
-play a sound. Toast and sound settings apply to the next notification; the
-applet reloads the config every 30 seconds and whenever its menu is opened.
+play a sound. Toast and sound settings apply immediately when the config file
+changes; the applet also reloads it every 30 seconds as a fallback.
 
 With `sound_enabled` set to `true` the applet always plays a sound, even if
 Cinnamon's own notification sound is unchecked in the sound settings. The file

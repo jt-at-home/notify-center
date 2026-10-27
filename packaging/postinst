@@ -1,0 +1,47 @@
+#!/bin/sh
+#
+# Start the collector in the installing user's session so a fresh install works
+# without waiting for the next login. This is best-effort: GUI package
+# managers may not expose the user, in which case the XDG autostart entry will
+# start the collector at the next login. Never fail the package installation.
+#
+set -u
+
+if [ "${1:-}" != "configure" ]; then
+    exit 0
+fi
+
+user_name=""
+if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+    user_name="$SUDO_USER"
+elif [ -n "${PKEXEC_UID:-}" ]; then
+    user_name="$(getent passwd "$PKEXEC_UID" 2>/dev/null | cut -d: -f1)"
+elif [ -n "${SUDO_UID:-}" ]; then
+    user_name="$(getent passwd "$SUDO_UID" 2>/dev/null | cut -d: -f1)"
+fi
+
+[ -n "$user_name" ] || exit 0
+
+uid="$(id -u "$user_name" 2>/dev/null)" || exit 0
+[ -n "$uid" ] || exit 0
+[ "$uid" -ne 0 ] || exit 0
+
+runtime="/run/user/$uid"
+[ -S "$runtime/bus" ] || exit 0
+command -v runuser >/dev/null 2>&1 || exit 0
+command -v systemctl >/dev/null 2>&1 || exit 0
+command -v timeout >/dev/null 2>&1 || exit 0
+
+# Reload so the newly installed user unit is visible to the running manager.
+timeout 10 runuser -u "$user_name" -- env \
+    XDG_RUNTIME_DIR="$runtime" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+
+# start blocks until the service is up (or fails); timeout prevents a hung dpkg.
+timeout 10 runuser -u "$user_name" -- env \
+    XDG_RUNTIME_DIR="$runtime" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+    systemctl --user start notify-center-collector.service >/dev/null 2>&1 || true
+
+exit 0

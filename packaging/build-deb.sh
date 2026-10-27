@@ -124,6 +124,8 @@ cat > "${STAGE}/DEBIAN/conffiles" <<'EOF'
 /etc/xdg/autostart/notify-center-collector.desktop
 EOF
 
+install -m 0755 "${HERE}/postinst" "${STAGE}/DEBIAN/postinst"
+
 ( cd "$STAGE" && find usr etc -type f -print0 | sort -z | xargs -0 md5sum > DEBIAN/md5sums )
 
 mkdir -p "$OUT_DIR"

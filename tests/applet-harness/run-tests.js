@@ -529,50 +529,7 @@ check(
     applet.menu !== oldMenu && applet.menu !== null
 );
 
-const configSpawnBefore = Util.spawned.length;
-applet._openConfig();
-check(
-    "config file opened",
-    Util.spawned.length === configSpawnBefore + 1 &&
-        String(Util.spawned[Util.spawned.length - 1][0]) === "xdg-open",
-    JSON.stringify(Util.spawned[Util.spawned.length - 1])
-);
-
-// A clean install has no config. Opening it must create one with defaults,
-// not fail or open the directory.
 const savedConfig = readJsonFile(CONFIG_FILE);
-Gio.File.new_for_path(CONFIG_FILE).delete(null);
-const createSpawnBefore = Util.spawned.length;
-applet._openConfig();
-check(
-    "config created when missing",
-    GLib.file_test(CONFIG_FILE, GLib.FileTest.EXISTS)
-);
-const createdConfig = readJsonFile(CONFIG_FILE);
-check(
-    "created config has defaults",
-    createdConfig.ignore_transient === true &&
-        createdConfig.dismiss_after_capture === false &&
-        createdConfig.toast_enabled === false &&
-        createdConfig.sound_enabled === false
-);
-check(
-    "created config opened instead of its directory",
-    Util.spawned.length === createSpawnBefore + 1 &&
-        String(Util.spawned[Util.spawned.length - 1][1]) === CONFIG_FILE,
-    JSON.stringify(Util.spawned[Util.spawned.length - 1])
-);
-const configInfo = Gio.File.new_for_path(CONFIG_FILE).query_info(
-    "unix::mode",
-    Gio.FileQueryInfoFlags.NONE,
-    null
-);
-check(
-    "created config is private",
-    (configInfo.get_attribute_uint32("unix::mode") & 0o777) === 0o600,
-    String(configInfo.get_attribute_uint32("unix::mode") & 0o777)
-);
-writeJsonFile(CONFIG_FILE, savedConfig);
 
 // First-run hint and preferences entry.
 applet._loadConfig();
@@ -586,12 +543,31 @@ check(
     "setup hint shown when config is missing",
     applet._setupItem.actor.visible === true
 );
+check(
+    "missing config defaults to notify-center",
+    applet._config.toastEnabled === true &&
+        applet._config.soundEnabled === true &&
+        applet._config.dismissAfterCapture === true
+);
 writeJsonFile(CONFIG_FILE, savedConfig);
 applet._loadConfig();
 check(
     "setup hint hidden after the config is restored",
     applet._setupItem.actor.visible === false
 );
+
+// An existing config from an older version keeps the opt-in defaults for keys
+// it does not have.
+writeJsonFile(CONFIG_FILE, { ignore_transient: true });
+applet._loadConfig();
+check(
+    "legacy config keeps the opt-in defaults",
+    applet._config.toastEnabled === false &&
+        applet._config.soundEnabled === false &&
+        applet._config.dismissAfterCapture === false
+);
+writeJsonFile(CONFIG_FILE, savedConfig);
+applet._loadConfig();
 
 // Config changes apply without a Cinnamon restart.
 const monitorConfig = readJsonFile(CONFIG_FILE);
