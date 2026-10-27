@@ -1,5 +1,7 @@
 # Notification Center for Cinnamon
 
+[![CI](https://github.com/jt-at-home/notify-center/actions/workflows/ci.yml/badge.svg)](https://github.com/jt-at-home/notify-center/actions/workflows/ci.yml)
+
 A persistent notification history for Cinnamon: record every desktop
 notification, search it, mark things read, and get an unread badge in the panel.
 

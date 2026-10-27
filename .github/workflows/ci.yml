@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gjs \
+            python3-gi \
+            gir1.2-gtk-3.0 \
+            xvfb \
+            xauth \
+            dbus
+
+      - name: Collector and viewer unit tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Applet harness (gjs)
+        run: ./tests/applet-harness/run.sh
+
+      - name: Installer and uninstaller
+        run: ./tests/test-installer.sh
+
+      - name: End-to-end smoke test (with viewer UI)
+        run: xvfb-run -a dbus-run-session -- ./tests/smoke-test.sh
+
+      - name: Cinnamon API check
+        run: ./tests/check-cinnamon-api.sh

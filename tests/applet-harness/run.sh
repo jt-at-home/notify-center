@@ -41,6 +41,20 @@ EOF
 export NOTIFY_CENTER_APPLET="$HERE/../../applet/applet.js"
 export GJS_PATH="$HERE/js"
 
+# Prefer Cinnamon's cjs (the engine the applet really runs on), but fall back
+# to plain gjs so the harness also works in CI and on non-Cinnamon machines.
+GJS_BIN="${GJS_BIN:-}"
+if [ -z "$GJS_BIN" ]; then
+    if command -v cjs >/dev/null 2>&1; then
+        GJS_BIN="cjs"
+    elif command -v gjs >/dev/null 2>&1; then
+        GJS_BIN="gjs"
+    else
+        echo "error: neither cjs nor gjs was found on PATH" >&2
+        exit 2
+    fi
+fi
+
 status=0
-cjs "$HERE/run-tests.js" || status=$?
+"$GJS_BIN" "$HERE/run-tests.js" || status=$?
 exit "$status"

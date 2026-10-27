@@ -27,3 +27,7 @@ exits), and runs the applet harness.
 The applet harness stubs `St`, so it covers toast and sound *gating* (config,
 ignored apps, `suppress-sound`, clamping) but not the rendered toast itself.
 Toast placement, styling and click behaviour need a live Cinnamon session.
+
+`tests/applet-harness/run.sh` uses `cjs` when it is available and falls back to
+plain `gjs`, so the suite also runs on machines without Cinnamon. CI uses gjs
+and runs the viewer self-test under Xvfb; see `.github/workflows/ci.yml`.
