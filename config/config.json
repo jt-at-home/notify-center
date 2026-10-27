@@ -4,5 +4,11 @@
   "ignore_transient": true,
   "ignore_apps": [],
   "persistent_apps": [],
-  "persistent_categories": []
+  "persistent_categories": [],
+  "dismiss_after_capture": false,
+  "toast_enabled": false,
+  "toast_timeout": 5,
+  "toast_position": "top-right",
+  "sound_enabled": false,
+  "sound_file": ""
 }

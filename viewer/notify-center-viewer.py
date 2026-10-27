@@ -37,7 +37,7 @@ URGENCY_NAMES = {0: "Low", 1: "Normal", 2: "Critical"}
 DB_MISSING_ERROR = "database not created yet"
 COLLECTOR_SERVICE = "notify-center-collector.service"
 START_PENDING_SECONDS = 45
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.2.0"
 PROJECT_URL = "https://github.com/jt-at-home/notify-center"
 
 

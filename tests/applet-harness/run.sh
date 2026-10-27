@@ -28,7 +28,13 @@ cat > "$XDG_CONFIG_HOME/notify-center/config.json" <<'EOF'
   "ignore_transient": true,
   "ignore_apps": ["Noisy"],
   "persistent_apps": ["Thunderbird"],
-  "persistent_categories": ["im.received"]
+  "persistent_categories": ["im.received"],
+  "dismiss_after_capture": false,
+  "toast_enabled": false,
+  "toast_timeout": 5,
+  "toast_position": "top-right",
+  "sound_enabled": false,
+  "sound_file": ""
 }
 EOF
 

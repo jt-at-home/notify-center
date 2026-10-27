@@ -34,7 +34,13 @@ require "PopupMenuItem" "ui/popupMenu.js"
 require "_notifyForSource" "ui/notificationDaemon.js"
 require "_expireNotifications" "ui/notificationDaemon.js"
 require "_restartExpire" "ui/notificationDaemon.js"
+require "CloseNotification" "ui/notificationDaemon.js"
 require "setResident" "ui/messageTray.js"
+require "NotificationDestroyedReason" "ui/messageTray.js"
+require "addChrome" "ui/layout.js"
+require "removeChrome" "ui/layout.js"
+require "playSoundFile" "ui/soundManager.js"
+require "playSound" "ui/soundManager.js"
 
 if [ "$missing" -eq 1 ]; then
     echo ""

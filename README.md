@@ -14,7 +14,10 @@ notification, search it, mark things read, and get an unread badge in the panel.
 - **Applet** — shows an unread count in the panel. Click it for a menu with
   *Open Notification Center* and *Open configuration file*; middle-click opens
   the viewer directly. If the collector is not running, the icon switches to a
-  warning icon and the tooltip explains.
+  warning icon and the tooltip explains. With `dismiss_after_capture`, it also
+  removes each recorded notification from Cinnamon's own popup and tray.
+  Optionally (`toast_enabled`, `sound_enabled`) it can instead show its own
+  notification popup and play a sound.
 - **Viewer** — search across app, title and body; filter by app, category or
   unread; mark read/unread, mark all read, delete or clear all; export the
   current view as JSON. Launch it from the application menu or
@@ -29,7 +32,10 @@ Cinnamon already implements `org.freedesktop.Notifications`, so nothing outside
 the shell can observe notifications. This applet hooks notification delivery
 inside the Cinnamon applet (same JS process as the shell), writes one small
 JSON file per notification, and the Python collector turns those files into
-SQLite. Cinnamon's native notification UI is untouched.
+SQLite. Cinnamon's native notification UI is untouched by default; the optional
+`dismiss_after_capture` setting closes a notification in Cinnamon after it has
+been recorded, and `toast_enabled` / `sound_enabled` make the applet draw and
+play its own notification instead.
 
 ```
 application
@@ -101,7 +107,13 @@ The installer never overwrites an existing
   "ignore_transient": true,
   "ignore_apps": [],
   "persistent_apps": [],
-  "persistent_categories": []
+  "persistent_categories": [],
+  "dismiss_after_capture": false,
+  "toast_enabled": false,
+  "toast_timeout": 5,
+  "toast_position": "top-right",
+  "sound_enabled": false,
+  "sound_file": ""
 }
 ```
 
@@ -113,6 +125,12 @@ The installer never overwrites an existing
 | `ignore_apps` | applet + collector | Case-insensitive app names or `.desktop` ids that should not be recorded. |
 | `persistent_apps` | applet | Optional. Apps whose notifications should **not** auto-expire (stay in Cinnamon's tray until dismissed). Matches app name or desktop-entry id. Empty by default. |
 | `persistent_categories` | applet | Optional. Same, by freedesktop category. A rule matches the category or its prefix (`im` matches `im.received`). Empty by default. |
+| `dismiss_after_capture` | applet | Optional, default `false`. After a notification is recorded, remove it from Cinnamon's popup and message tray so the history is the only place it lives. |
+| `toast_enabled` | applet | Optional, default `false`. Show notify-center's own popup for each recorded notification. Drawn by the applet, so it is independent of Cinnamon's notification display setting. |
+| `toast_timeout` | applet | Seconds a toast stays on screen (1–60). Default `5`. |
+| `toast_position` | applet | `top-right` (default), `bottom-right`, `top-left` or `bottom-left`. |
+| `sound_enabled` | applet | Optional, default `false`. Play a sound for each recorded notification. |
+| `sound_file` | applet | Optional absolute path to a sound file. Empty uses the desktop's configured notification sound, then the freedesktop `message-new-instant` theme sound. |
 
 History and the unread badge are the primary safety net: every recorded
 notification remains searchable and contributes to the unread count even after
@@ -120,9 +138,44 @@ its popup and tray item are gone. The `persistent_*` lists are strictly opt-in
 for the cases where you also want a notification parked in Cinnamon's tray.
 They do not affect recording or the unread count.
 
+`dismiss_after_capture` only applies to notifications the applet actually
+recorded: ignored apps and ignored transient notifications are left to Cinnamon
+unchanged. A matching `persistent_*` rule wins, so those notifications stay
+visible. Dismissal happens immediately after Cinnamon queues the notification,
+which means its popup may not be visible at all; the history and unread count
+still record it. Only a JSON `true` enables it.
+
+`toast_enabled` and `sound_enabled` are the applet's own replacement for
+Cinnamon's notification UI. Toasts are drawn by the applet, not by Cinnamon, so
+they keep working when Cinnamon's own notifications are disabled. That is the
+recommended way to run the applet as a full replacement:
+
+```json
+{
+  "dismiss_after_capture": true,
+  "toast_enabled": true,
+  "sound_enabled": true
+}
+```
+
+If Cinnamon's notifications are left enabled, either enable
+`dismiss_after_capture` too or leave `toast_enabled` off, otherwise both popups
+appear. Toasts stack up to four, disappear after `toast_timeout`, and open the
+viewer when clicked. Notifications carrying the `suppress-sound` hint never
+play a sound. Toast and sound settings apply to the next notification; the
+applet reloads the config every 30 seconds and whenever its menu is opened.
+
+With `sound_enabled` set to `true` the applet always plays a sound, even if
+Cinnamon's own notification sound is unchecked in the sound settings. The file
+is still the one configured for *Showing notifications* (so changing that file
+changes notify-center's sound), unless `sound_file` overrides it.
+
 `persistent_*` uses Cinnamon internals to remove the notification from its
 expiry queue and mark it resident. If a future Cinnamon changes those internals,
-the applet catches the error and continues recording.
+the applet catches the error and continues recording. `dismiss_after_capture`
+uses the daemon's `CloseNotification` method, with a guarded fallback that
+destroys the notification directly; if neither works, the notification simply
+stays in Cinnamon.
 
 ---
 
@@ -210,6 +263,26 @@ environment may use a different path.
 - History starts when the applet is added. There is no backfill of older
   notifications.
 
+**Cinnamon's own popups never show up**
+
+Check `dismiss_after_capture` in the config. When it is `true`, every
+notification the applet records is closed in Cinnamon immediately after
+capture; set it to `false` to get Cinnamon's normal popups and tray back.
+
+**notify-center's toasts never show up**
+
+Set `toast_enabled` to `true`. This is independent of Cinnamon's notification
+settings, so turning Cinnamon's popups off does not disable notify-center's.
+If the Cinnamon log contains `St is unavailable`, the applet cannot draw
+toasts, but recording and the viewer still work.
+
+**No notification sound**
+
+Set `sound_enabled` to `true`. If it is enabled but silent, check that
+`sound_file` (when set) points at a readable file, and that the sound player
+is not muted. With an empty `sound_file` the applet uses the notification sound
+configured in Cinnamon's sound settings.
+
 **Viewer says "No database yet"**
 
 The collector has not run successfully. Start it, or run
@@ -248,6 +321,13 @@ directories use `0700`. Nothing is sent off the machine. Set
 - The applet relies on Cinnamon's private `_notifyForSource` hook. If a future
   Cinnamon changes it, notification capture is disabled but the rest of the
   app keeps working.
+- `dismiss_after_capture` depends on the daemon's `CloseNotification` method
+  (or, failing that, the notification object), so a future Cinnamon can make it
+  a no-op. The notification then stays in Cinnamon and recording is unaffected.
+- `toast_enabled` and `sound_enabled` are applet UI: toasts disappear and sounds
+  stop when the applet is removed from the panel. Toasts show the notification
+  text only — no action buttons; clicking a toast opens the viewer. Toasts are
+  placed on the primary monitor.
 - Notification **actions** are stored as JSON and shown only as metadata. The
   viewer cannot invoke an action after the notification has expired.
 - Cinnamon notification IDs are reused for replacements, which the collector

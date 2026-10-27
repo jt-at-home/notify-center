@@ -8,10 +8,14 @@
 //
 // The applet never touches SQLite, never owns a D-Bus name, and never replaces
 // Cinnamon's notification UI. If the hook is unavailable, it logs an error and
-// leaves Cinnamon alone.
+// leaves Cinnamon alone. Optionally (dismiss_after_capture) a recorded
+// notification is closed in Cinnamon right after it is captured, and
+// optionally (toast_enabled / sound_enabled) the applet shows its own toast
+// and plays a sound, so history can fully replace the built-in notifications.
 
 const Applet = imports.ui.applet;
 const Main = imports.ui.main;
+const MessageTray = imports.ui.messageTray;
 const PopupMenu = imports.ui.popupMenu;
 const Util = imports.misc.util;
 const GLib = imports.gi.GLib;
@@ -37,6 +41,46 @@ const STATUS_STALE_SECONDS = 180;
 const SPOOL_MAX_FILES = 2000;
 const SPOOL_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const SPOOL_PRUNE_INTERVAL_SECONDS = 60 * 60;
+
+const TOAST_WIDTH = 360;
+const TOAST_MARGIN = 24;
+const TOAST_MAX = 4;
+const TOAST_POSITIONS = [
+    "top-right",
+    "bottom-right",
+    "top-left",
+    "bottom-left",
+];
+
+// St is part of Cinnamon and does not exist outside a Cinnamon session (for
+// example in the applet test harness), so load it lazily and fail soft.
+let cachedSt = null;
+let cachedClutter = null;
+
+function getSt() {
+    if (cachedSt === null) {
+        try {
+            cachedSt = imports.gi.St;
+        } catch (e) {
+            cachedSt = false;
+            global.logError(
+                "notify-center: St is unavailable; notification toasts are disabled"
+            );
+        }
+    }
+    return cachedSt || null;
+}
+
+function getClutter() {
+    if (cachedClutter === null) {
+        try {
+            cachedClutter = imports.gi.Clutter;
+        } catch (e) {
+            cachedClutter = false;
+        }
+    }
+    return cachedClutter || null;
+}
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -88,6 +132,33 @@ function configList(raw, primary, legacy) {
     return [];
 }
 
+// Plain single-line text for toasts: notifications can contain markup and
+// embedded newlines, neither of which belongs in a small popup.
+function plainText(value) {
+    let text = asString(value);
+    try {
+        if (typeof Util.decodeHTML === "function") {
+            text = Util.decodeHTML(text);
+        }
+    } catch (e) {
+        // Fall back to the raw text.
+    }
+    return text.replace(/\s+/g, " ").trim();
+}
+
+function numberInRange(value, fallback, min, max) {
+    let number = Number(value);
+    if (!isFinite(number)) {
+        return fallback;
+    }
+    return Math.max(min, Math.min(max, Math.round(number)));
+}
+
+function toastPosition(value) {
+    let text = asString(value).trim().toLowerCase();
+    return TOAST_POSITIONS.indexOf(text) === -1 ? "top-right" : text;
+}
+
 // ---------------------------------------------------------------------------
 
 function NotificationCenterApplet(metadata, orientation, panelHeight, instanceId) {
@@ -116,6 +187,12 @@ NotificationCenterApplet.prototype = {
             ignoreApps: [],
             persistentApps: [],
             persistentCategories: [],
+            dismissAfterCapture: false,
+            toastEnabled: false,
+            toastTimeout: 5,
+            toastPosition: "top-right",
+            soundEnabled: false,
+            soundFile: "",
         };
         this._hooked = false;
         this._originalNotifyForSource = null;
@@ -123,6 +200,11 @@ NotificationCenterApplet.prototype = {
         this._timeoutId = 0;
         this._menuCount = null;
         this._lastPrune = 0;
+        this._toasts = [];
+        this._toastLayer = null;
+        this._toastMonitorId = 0;
+        this._soundId = 0;
+        this._soundSettings = undefined;
 
         this._loadConfig();
         try {
@@ -158,6 +240,7 @@ NotificationCenterApplet.prototype = {
 
     on_applet_removed_from_panel: function () {
         this._removeHook();
+        this._destroyToasts();
         if (this._timeoutId) {
             GLib.source_remove(this._timeoutId);
             this._timeoutId = 0;
@@ -285,6 +368,14 @@ NotificationCenterApplet.prototype = {
                 "persistent_categories",
                 "categories"
             ),
+            // Opt-in and deliberately strict: only a JSON true enables it.
+            dismissAfterCapture: raw.dismiss_after_capture === true,
+            toastEnabled: raw.toast_enabled === true,
+            toastTimeout: numberInRange(raw.toast_timeout, 5, 1, 60),
+            toastPosition: toastPosition(raw.toast_position),
+            soundEnabled: raw.sound_enabled === true,
+            soundFile:
+                typeof raw.sound_file === "string" ? raw.sound_file.trim() : "",
         };
     },
 
@@ -333,8 +424,9 @@ NotificationCenterApplet.prototype = {
         this._originalNotifyForSource = daemon._notifyForSource;
         let self = this;
         daemon._notifyForSource = function (source, ndata) {
+            let captured = false;
             try {
-                self._capture(ndata);
+                captured = self._capture(ndata);
             } catch (e) {
                 global.logError(e);
             }
@@ -342,7 +434,14 @@ NotificationCenterApplet.prototype = {
                 return self._originalNotifyForSource.call(this, source, ndata);
             } finally {
                 try {
+                    // Persistence is independent of recording: it still applies
+                    // to ignored apps. Dismissal only makes sense for a
+                    // notification we actually kept a copy of.
                     self._maybePersist(ndata);
+                    if (captured) {
+                        self._maybeAnnounce(ndata);
+                        self._maybeDismiss(ndata);
+                    }
                 } catch (e) {
                     global.logError(e);
                 }
@@ -365,19 +464,19 @@ NotificationCenterApplet.prototype = {
 
     _capture: function (ndata) {
         if (!ndata) {
-            return;
+            return false;
         }
         let hints =
             ndata.hints && typeof ndata.hints === "object" ? ndata.hints : {};
         let transient = hints["transient"] === true;
         if (transient && this._config.ignoreTransient) {
-            return;
+            return false;
         }
 
         let app = asString(ndata.appName);
         let desktopEntry = asString(hints["desktop-entry"]);
         if (this._isIgnored(app) || this._isIgnored(desktopEntry)) {
-            return;
+            return false;
         }
 
         let urgency = Number(hints["urgency"]);
@@ -405,7 +504,7 @@ NotificationCenterApplet.prototype = {
             hints: this._sanitizeHints(hints),
             timestamp: Math.floor(Date.now() / 1000),
         };
-        this._writeSpool(record);
+        return this._writeSpool(record);
     },
 
     _sanitizeHints: function (hints) {
@@ -466,9 +565,12 @@ NotificationCenterApplet.prototype = {
             let path = GLib.build_filenamev([SPOOL_DIR, name]);
             if (!GLib.file_set_contents(path, JSON.stringify(record))) {
                 global.logError("notify-center: cannot write spool file " + path);
+                return false;
             }
+            return true;
         } catch (e) {
             global.logError(e);
+            return false;
         }
     },
 
@@ -545,6 +647,21 @@ NotificationCenterApplet.prototype = {
         }
     },
 
+    // True when a persistent_* rule matches this notification, by app name,
+    // desktop-entry id or category prefix.
+    _matchesPersistent: function (ndata) {
+        let hints =
+            ndata.hints && typeof ndata.hints === "object" ? ndata.hints : {};
+        let app = asString(ndata.appName);
+        let desktopEntry = asString(hints["desktop-entry"]);
+        let category = asString(hints["category"]);
+        return (
+            this._isPersistentApp(app) ||
+            this._isPersistentApp(desktopEntry) ||
+            this._isPersistentCategory(category)
+        );
+    },
+
     // Keep rule-matched notifications on screen instead of letting them
     // disappear after the banner timeout. This intentionally relies on
     // Cinnamon internals and is fully guarded.
@@ -552,16 +669,7 @@ NotificationCenterApplet.prototype = {
         if (!ndata || !ndata.notification) {
             return;
         }
-        let hints =
-            ndata.hints && typeof ndata.hints === "object" ? ndata.hints : {};
-        let app = asString(ndata.appName);
-        let desktopEntry = asString(hints["desktop-entry"]);
-        let category = asString(hints["category"]);
-        if (
-            !this._isPersistentApp(app) &&
-            !this._isPersistentApp(desktopEntry) &&
-            !this._isPersistentCategory(category)
-        ) {
+        if (!this._matchesPersistent(ndata)) {
             return;
         }
 
@@ -582,6 +690,339 @@ NotificationCenterApplet.prototype = {
             }
         } catch (e) {
             global.logError(e);
+        }
+    },
+
+    // Optional: remove a recorded notification from Cinnamon's own banner and
+    // message tray so the history is the only place it lives. Persistent rules
+    // opt out and keep the notification visible. Guarded like the rest of the
+    // Cinnamon-internals use.
+    _maybeDismiss: function (ndata) {
+        if (!this._config.dismissAfterCapture || !ndata || !ndata.notification) {
+            return;
+        }
+        if (this._matchesPersistent(ndata)) {
+            return;
+        }
+        if (ndata.id === undefined || ndata.id === null) {
+            return;
+        }
+
+        let daemon = Main.notificationDaemon;
+        if (!daemon) {
+            return;
+        }
+        try {
+            if (typeof daemon.CloseNotification === "function") {
+                daemon.CloseNotification(ndata.id);
+                return;
+            }
+            // Fallback for a daemon without the D-Bus-facing method.
+            let entry =
+                daemon._notifications && daemon._notifications[ndata.id];
+            if (
+                entry &&
+                entry.notification &&
+                typeof entry.notification.destroy === "function"
+            ) {
+                entry.notification.destroy(
+                    MessageTray.NotificationDestroyedReason.SOURCE_CLOSED
+                );
+                delete daemon._notifications[ndata.id];
+            }
+        } catch (e) {
+            global.logError(e);
+        }
+    },
+
+    // -- toast and sound --------------------------------------------------
+
+    // Optional replacement for Cinnamon's own notification UI: an opt-in
+    // toast drawn by the applet (so it is independent of Cinnamon's
+    // display-notifications setting) and an opt-in sound.
+    _maybeAnnounce: function (ndata) {
+        if (!ndata) {
+            return;
+        }
+        if (!this._config.toastEnabled && !this._config.soundEnabled) {
+            return;
+        }
+        let hints =
+            ndata.hints && typeof ndata.hints === "object" ? ndata.hints : {};
+        let app = plainText(ndata.appName);
+        let title = plainText(ndata.summary) || app || "Notification";
+        let body = plainText(ndata.body);
+        let icon = asString(ndata.appIcon).trim();
+
+        // Apps ask for silence with the freedesktop suppress-sound hint.
+        if (this._config.soundEnabled && hints["suppress-sound"] !== true) {
+            this._playNotificationSound();
+        }
+        if (this._config.toastEnabled) {
+            this._showToast({ app: app, title: title, body: body, icon: icon });
+        }
+    },
+
+    _playNotificationSound: function () {
+        try {
+            let file = this._config.soundFile;
+            if (!file) {
+                if (this._soundSettings === undefined) {
+                    try {
+                        this._soundSettings = new Gio.Settings({
+                            schema_id: "org.cinnamon.sounds",
+                        });
+                    } catch (e) {
+                        this._soundSettings = null;
+                    }
+                }
+                if (this._soundSettings) {
+                    file = this._soundSettings.get_string("notification-file");
+                }
+            }
+
+            let manager = Main.soundManager;
+            this._soundId = (this._soundId + 1) % 100000;
+            if (
+                file &&
+                GLib.file_test(file, GLib.FileTest.EXISTS) &&
+                manager &&
+                typeof manager.playSoundFile === "function"
+            ) {
+                manager.playSoundFile(this._soundId, file);
+                return;
+            }
+            if (manager && typeof manager.playSound === "function") {
+                manager.playSound(this._soundId, "message-new-instant");
+                return;
+            }
+            Util.spawn(["canberra-gtk-play", "-i", "message-new-instant"]);
+        } catch (e) {
+            global.logError(e);
+        }
+    },
+
+    _showToast: function (data) {
+        let St = getSt();
+        if (!St || !this._config.toastEnabled) {
+            return;
+        }
+        try {
+            if (!this._toastLayer) {
+                this._ensureToastLayer(St);
+            }
+            if (!this._toastLayer) {
+                return;
+            }
+
+            let toast = new St.Button({
+                reactive: true,
+                can_focus: false,
+                x_expand: true,
+                style:
+                    "background-color: rgba(24, 24, 24, 0.96);" +
+                    " background-image: none;" +
+                    " border: 1px solid rgba(255, 255, 255, 0.14);" +
+                    " border-radius: 8px; padding: 10px 12px;" +
+                    " box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);",
+            });
+            let content = new St.BoxLayout({
+                vertical: false,
+                style: "spacing: 10px;",
+            });
+            toast.set_child(content);
+
+            content.add_child(this._makeToastIcon(St, data.icon));
+
+            let textBox = new St.BoxLayout({
+                vertical: true,
+                style: "spacing: 2px;",
+                x_expand: true,
+            });
+            content.add_child(textBox);
+
+            if (data.app) {
+                let appLabel = new St.Label({
+                    text: data.app,
+                    style: "color: #bdbdbd; font-size: 0.85em;",
+                });
+                textBox.add_child(appLabel);
+            }
+
+            let title = data.title;
+            if (title.length > 120) {
+                title = title.slice(0, 117) + "...";
+            }
+            let titleLabel = new St.Label({
+                text: title,
+                style: "color: #ffffff; font-weight: bold;",
+            });
+            titleLabel.clutter_text.line_wrap = true;
+            textBox.add_child(titleLabel);
+
+            if (data.body) {
+                let body = data.body;
+                if (body.length > 240) {
+                    body = body.slice(0, 237) + "...";
+                }
+                let bodyLabel = new St.Label({
+                    text: body,
+                    style: "color: #e0e0e0;",
+                });
+                bodyLabel.clutter_text.line_wrap = true;
+                textBox.add_child(bodyLabel);
+            }
+
+            toast.connect("clicked", () => {
+                this._openViewer();
+                this._removeToast(toast);
+            });
+
+            this._toasts.push(toast);
+            this._toastLayer.add_child(toast);
+            if (this._toasts.length > TOAST_MAX) {
+                this._removeToast(this._toasts[0]);
+            }
+
+            toast.opacity = 0;
+            let Clutter = getClutter();
+            if (Clutter && Clutter.AnimationMode) {
+                toast.ease({
+                    opacity: 255,
+                    duration: 150,
+                    mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                });
+            } else {
+                toast.opacity = 255;
+            }
+
+            this._positionToasts();
+
+            let seconds = numberInRange(this._config.toastTimeout, 5, 1, 60);
+            toast._notifyCenterTimeoutId = GLib.timeout_add_seconds(
+                GLib.PRIORITY_DEFAULT,
+                seconds,
+                () => {
+                    toast._notifyCenterTimeoutId = 0;
+                    this._removeToast(toast);
+                    return GLib.SOURCE_REMOVE;
+                }
+            );
+        } catch (e) {
+            global.logError(e);
+        }
+    },
+
+    _makeToastIcon: function (St, iconName) {
+        try {
+            if (iconName && iconName.charAt(0) === "/") {
+                return new St.Icon({
+                    gicon: new Gio.FileIcon({
+                        file: Gio.File.new_for_path(iconName),
+                    }),
+                    icon_size: 32,
+                });
+            }
+        } catch (e) {
+            global.logError(e);
+        }
+        return new St.Icon({
+            icon_name: iconName || "dialog-information",
+            icon_size: 32,
+        });
+    },
+
+    _ensureToastLayer: function (St) {
+        this._toastLayer = new St.BoxLayout({
+            vertical: true,
+            reactive: false,
+            style: "spacing: 8px; width: " + TOAST_WIDTH + "px;",
+        });
+        Main.layoutManager.addChrome(this._toastLayer, {
+            visibleInFullscreen: false,
+        });
+        this._toastLayer.connect("notify::height", () =>
+            this._positionToasts()
+        );
+        this._toastMonitorId = Main.layoutManager.connect(
+            "monitors-changed",
+            () => this._positionToasts()
+        );
+        this._positionToasts();
+    },
+
+    _positionToasts: function () {
+        if (!this._toastLayer) {
+            return;
+        }
+        let area = null;
+        try {
+            area = global.workspace_manager
+                .get_active_workspace()
+                .get_work_area_for_monitor(Main.layoutManager.primaryIndex);
+        } catch (e) {
+            area = null;
+        }
+        if (!area) {
+            area = Main.layoutManager.primaryMonitor;
+        }
+        if (!area) {
+            return;
+        }
+        let position = this._config.toastPosition;
+        let onLeft = position.indexOf("left") !== -1;
+        let onBottom = position.indexOf("bottom") !== -1;
+        this._toastLayer.x = onLeft
+            ? area.x + TOAST_MARGIN
+            : area.x + area.width - TOAST_WIDTH - TOAST_MARGIN;
+        this._toastLayer.y = onBottom
+            ? area.y + area.height - this._toastLayer.height - TOAST_MARGIN
+            : area.y + TOAST_MARGIN;
+    },
+
+    _removeToast: function (toast) {
+        let index = this._toasts.indexOf(toast);
+        if (index === -1) {
+            return;
+        }
+        this._toasts.splice(index, 1);
+        if (toast._notifyCenterTimeoutId) {
+            GLib.source_remove(toast._notifyCenterTimeoutId);
+            toast._notifyCenterTimeoutId = 0;
+        }
+        try {
+            toast.destroy();
+        } catch (e) {
+            global.logError(e);
+        }
+        this._positionToasts();
+    },
+
+    _destroyToasts: function () {
+        for (let i = 0; i < this._toasts.length; i += 1) {
+            let toast = this._toasts[i];
+            if (toast._notifyCenterTimeoutId) {
+                GLib.source_remove(toast._notifyCenterTimeoutId);
+                toast._notifyCenterTimeoutId = 0;
+            }
+        }
+        this._toasts = [];
+        if (this._toastLayer) {
+            try {
+                Main.layoutManager.removeChrome(this._toastLayer);
+            } catch (e) {
+                global.logError(e);
+            }
+            this._toastLayer.destroy();
+            this._toastLayer = null;
+        }
+        if (this._toastMonitorId) {
+            try {
+                Main.layoutManager.disconnect(this._toastMonitorId);
+            } catch (e) {
+                global.logError(e);
+            }
+            this._toastMonitorId = 0;
         }
     },
 

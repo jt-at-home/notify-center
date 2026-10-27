@@ -203,6 +203,248 @@ check("persistent notification marked resident", keepResident.resident === true)
 check("expiry timer restarted", Main.notificationDaemon.restarted > restartsBefore);
 check("expires reset", persistent.expires === 0);
 
+// -- dismiss_after_capture --------------------------------------------------
+
+const daemon = Main.notificationDaemon;
+
+function dismissConfig(enabled) {
+    writeJsonFile(CONFIG_FILE, {
+        ignore_transient: true,
+        ignore_apps: ["Noisy"],
+        persistent_apps: ["Thunderbird"],
+        persistent_categories: ["im.received"],
+        dismiss_after_capture: enabled,
+    });
+    applet._loadConfig();
+}
+
+function notify(id, appName, hints, notification) {
+    const ndata = {
+        id: id,
+        appName: appName,
+        summary: "Dismiss me",
+        body: "body",
+        notification: notification || { setResident() {} },
+        hints: hints || {},
+    };
+    daemon._notifyForSource({}, ndata);
+    return ndata;
+}
+
+daemon.closed.length = 0;
+dismissConfig(false);
+notify(20, "Signal");
+check(
+    "dismiss disabled leaves the notification alone",
+    daemon.closed.length === 0,
+    JSON.stringify(daemon.closed)
+);
+
+daemon.closed.length = 0;
+dismissConfig(true);
+const dismissable = notify(21, "Signal");
+check(
+    "recorded notification dismissed from Cinnamon",
+    daemon.closed.length === 1 && daemon.closed[0] === 21,
+    JSON.stringify(daemon.closed)
+);
+check(
+    "dismissed notification still written to the spool",
+    allRecords().some((item) => item.source_id === 21)
+);
+
+daemon.closed.length = 0;
+notify(22, "Noisy");
+check(
+    "ignored app is not dismissed",
+    daemon.closed.length === 0,
+    JSON.stringify(daemon.closed)
+);
+
+daemon.closed.length = 0;
+notify(23, "Signal", { transient: true });
+check(
+    "ignored transient is not dismissed",
+    daemon.closed.length === 0,
+    JSON.stringify(daemon.closed)
+);
+
+daemon.closed.length = 0;
+notify(24, "Thunderbird");
+check(
+    "persistent app wins over dismissal",
+    daemon.closed.length === 0,
+    JSON.stringify(daemon.closed)
+);
+
+daemon.closed.length = 0;
+notify(25, "Signal", { category: "im.received" });
+check(
+    "persistent category wins over dismissal",
+    daemon.closed.length === 0,
+    JSON.stringify(daemon.closed)
+);
+
+writeJsonFile(CONFIG_FILE, {
+    ignore_transient: true,
+    ignore_apps: [],
+    persistent_apps: [],
+    persistent_categories: [],
+    dismiss_after_capture: "true",
+});
+applet._loadConfig();
+check(
+    "only JSON true enables dismissal",
+    applet._config.dismissAfterCapture === false
+);
+
+// Older daemons may lack the D-Bus-facing CloseNotification method; the
+// fallback destroys the notification object directly.
+dismissConfig(true);
+const originalClose = daemon.CloseNotification;
+delete daemon.CloseNotification;
+let destroyedReason = null;
+const fallbackNotification = {
+    destroy(reason) {
+        destroyedReason = reason;
+    },
+};
+daemon._notifications[26] = { notification: fallbackNotification };
+notify(26, "Signal", {}, fallbackNotification);
+daemon.CloseNotification = originalClose;
+check(
+    "fallback destroys the notification",
+    destroyedReason === imports.ui.messageTray.NotificationDestroyedReason.SOURCE_CLOSED,
+    String(destroyedReason)
+);
+check(
+    "fallback clears the daemon map entry",
+    !(26 in daemon._notifications)
+);
+
+// -- toast and sound --------------------------------------------------------
+
+const toastsShown = [];
+const soundsPlayed = [];
+const realShowToast = applet._showToast;
+const realPlaySound = applet._playNotificationSound;
+applet._showToast = function (data) {
+    toastsShown.push(data);
+};
+applet._playNotificationSound = function () {
+    soundsPlayed.push(true);
+};
+
+function announceConfig(options) {
+    writeJsonFile(CONFIG_FILE, {
+        ignore_transient: true,
+        ignore_apps: ["Noisy"],
+        persistent_apps: ["Thunderbird"],
+        persistent_categories: ["im.received"],
+        dismiss_after_capture: false,
+        toast_enabled: options.toast === true,
+        toast_timeout: options.timeout === undefined ? 5 : options.timeout,
+        toast_position:
+            options.position === undefined ? "top-right" : options.position,
+        sound_enabled: options.sound === true,
+        sound_file: options.soundFile === undefined ? "" : options.soundFile,
+    });
+    applet._loadConfig();
+}
+
+function deliver(id, appName, hints, notification) {
+    daemon._notifyForSource({}, {
+        id: id,
+        appName: appName,
+        summary: "Toast title",
+        body: "Toast body",
+        notification: notification || { setResident() {} },
+        hints: hints || {},
+    });
+}
+
+announceConfig({});
+deliver(30, "Signal");
+check("no toast when disabled", toastsShown.length === 0, String(toastsShown.length));
+check("no sound when disabled", soundsPlayed.length === 0, String(soundsPlayed.length));
+
+announceConfig({ toast: true });
+deliver(31, "Signal");
+check("toast shown when enabled", toastsShown.length === 1, String(toastsShown.length));
+check(
+    "toast carries app, title and body",
+    toastsShown[0] &&
+        toastsShown[0].app === "Signal" &&
+        toastsShown[0].title === "Toast title" &&
+        toastsShown[0].body === "Toast body",
+    JSON.stringify(toastsShown[0])
+);
+check("toast does not force sound", soundsPlayed.length === 0);
+
+announceConfig({ sound: true });
+deliver(32, "Signal");
+check("sound played when enabled", soundsPlayed.length === 1, String(soundsPlayed.length));
+check("sound alone does not toast", toastsShown.length === 1, String(toastsShown.length));
+
+deliver(33, "Signal", { "suppress-sound": true });
+check(
+    "suppress-sound hint respected",
+    soundsPlayed.length === 1,
+    String(soundsPlayed.length)
+);
+
+announceConfig({ toast: true, sound: true });
+deliver(34, "Noisy");
+check(
+    "ignored app neither toasts nor sounds",
+    toastsShown.length === 1 && soundsPlayed.length === 1
+);
+deliver(35, "Signal", { transient: true });
+check(
+    "ignored transient neither toasts nor sounds",
+    toastsShown.length === 1 && soundsPlayed.length === 1
+);
+
+announceConfig({ timeout: 999, position: "middle" });
+check("toast timeout clamped", applet._config.toastTimeout === 60, String(applet._config.toastTimeout));
+check("invalid toast position falls back", applet._config.toastPosition === "top-right");
+
+writeJsonFile(CONFIG_FILE, {
+    ignore_transient: true,
+    toast_enabled: "true",
+    sound_enabled: "true",
+});
+applet._loadConfig();
+check(
+    "only JSON true enables toast and sound",
+    applet._config.toastEnabled === false && applet._config.soundEnabled === false
+);
+
+applet._playNotificationSound = realPlaySound;
+const soundPath =
+    "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga";
+applet._config.soundFile = soundPath;
+Main.soundManager.played.length = 0;
+applet._playNotificationSound();
+check(
+    "configured sound file is played",
+    Main.soundManager.played.length === 1 &&
+        Main.soundManager.played[0] === soundPath,
+    JSON.stringify(Main.soundManager.played)
+);
+applet._playNotificationSound = realPlaySound;
+applet._showToast = realShowToast;
+
+// Leave the harness config in the state later checks expect.
+writeJsonFile(CONFIG_FILE, {
+    ignore_transient: true,
+    ignore_apps: ["Noisy"],
+    persistent_apps: ["Thunderbird"],
+    persistent_categories: ["im.received"],
+    dismiss_after_capture: false,
+});
+applet._loadConfig();
+
 writeJsonFile(STATUS_FILE, {
     unread: 7,
     total: 9,

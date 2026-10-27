@@ -154,7 +154,7 @@ class ViewerHelpersTest(unittest.TestCase):
         with redirect_stdout(output):
             code = self.module.main(["notify-center-viewer", "--version"])
         self.assertEqual(code, 0)
-        self.assertIn("1.0.0", output.getvalue())
+        self.assertIn(self.module.APP_VERSION, output.getvalue())
 
 
 if __name__ == "__main__":
