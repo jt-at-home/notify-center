@@ -2,7 +2,7 @@
   "uuid": "notification-center@jt-at-home",
   "name": "Notification Center",
   "description": "Persistent notification history, unread counter and quick access to the viewer",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "cinnamon-version": ["6.0"],
   "max-instances": 1,
   "icon": "dialog-information",

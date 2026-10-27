@@ -37,7 +37,7 @@ URGENCY_NAMES = {0: "Low", 1: "Normal", 2: "Critical"}
 DB_MISSING_ERROR = "database not created yet"
 COLLECTOR_SERVICE = "notify-center-collector.service"
 START_PENDING_SECONDS = 45
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 PROJECT_URL = "https://github.com/jt-at-home/notify-center"
 
 
@@ -55,6 +55,36 @@ DATA_DIR = data_dir()
 DB_PATH = DATA_DIR / "notifications.db"
 STATUS_PATH = DATA_DIR / "status.json"
 CONFIG_PATH = config_dir() / "config.json"
+
+# Written on first use so the Settings button works on a clean install.
+DEFAULT_CONFIG = {
+    "retention_days": 30,
+    "max_rows": 5000,
+    "ignore_transient": True,
+    "ignore_apps": [],
+    "persistent_apps": [],
+    "persistent_categories": [],
+    "dismiss_after_capture": False,
+    "toast_enabled": False,
+    "toast_timeout": 5,
+    "toast_position": "top-right",
+    "sound_enabled": False,
+    "sound_file": "",
+}
+
+
+def ensure_config_file() -> Path:
+    """Create the config file with defaults if it does not exist yet."""
+    if CONFIG_PATH.exists():
+        return CONFIG_PATH
+
+    directory = CONFIG_PATH.parent
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    CONFIG_PATH.write_text(
+        json.dumps(DEFAULT_CONFIG, indent=2) + "\n", encoding="utf-8"
+    )
+    os.chmod(CONFIG_PATH, 0o600)
+    return CONFIG_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -885,11 +915,12 @@ class MainWindow(Gtk.ApplicationWindow):
             self._error("Cannot write the export file", str(exc))
 
     def _open_config(self, *_args) -> None:
-        target = CONFIG_PATH if CONFIG_PATH.exists() else config_dir()
-        if not target.exists():
+        try:
+            target = ensure_config_file()
+        except OSError as exc:
             self._error(
-                "Config not found",
-                f"Expected {CONFIG_PATH}. Reinstall notify-center to create it.",
+                "Cannot create the config file",
+                f"{CONFIG_PATH}\n\n{exc}",
             )
             return
         try:

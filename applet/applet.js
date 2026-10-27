@@ -159,6 +159,25 @@ function toastPosition(value) {
     return TOAST_POSITIONS.indexOf(text) === -1 ? "top-right" : text;
 }
 
+// Mirrors the default config shipped in config/config.json. Written on first
+// use so "Open configuration file" works on a clean install.
+function defaultConfig() {
+    return {
+        retention_days: 30,
+        max_rows: 5000,
+        ignore_transient: true,
+        ignore_apps: [],
+        persistent_apps: [],
+        persistent_categories: [],
+        dismiss_after_capture: false,
+        toast_enabled: false,
+        toast_timeout: 5,
+        toast_position: "top-right",
+        sound_enabled: false,
+        sound_file: "",
+    };
+}
+
 // ---------------------------------------------------------------------------
 
 function NotificationCenterApplet(metadata, orientation, panelHeight, instanceId) {
@@ -342,6 +361,32 @@ NotificationCenterApplet.prototype = {
     },
 
     _openConfig: function () {
+        try {
+            if (!GLib.file_test(CONFIG_FILE, GLib.FileTest.EXISTS)) {
+                let directory = GLib.build_filenamev([
+                    GLib.get_user_config_dir(),
+                    APP_NAME,
+                ]);
+                GLib.mkdir_with_parents(directory, 0o700);
+                let contents = JSON.stringify(defaultConfig(), null, 2) + "\n";
+                if (!GLib.file_set_contents(CONFIG_FILE, contents)) {
+                    throw new Error("cannot write " + CONFIG_FILE);
+                }
+                try {
+                    Gio.File.new_for_path(CONFIG_FILE).set_attribute_uint32(
+                        "unix::mode",
+                        0o600,
+                        Gio.FileQueryInfoFlags.NONE,
+                        null
+                    );
+                } catch (e) {
+                    global.logError(e);
+                }
+            }
+        } catch (e) {
+            global.logError(e);
+        }
+
         let target = GLib.file_test(CONFIG_FILE, GLib.FileTest.EXISTS)
             ? CONFIG_FILE
             : GLib.build_filenamev([GLib.get_user_config_dir(), APP_NAME]);

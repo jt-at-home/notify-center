@@ -102,6 +102,9 @@ The installer never overwrites an existing
 
 `~/.config/notify-center/config.json`:
 
+If the file does not exist yet, the applet's *Open configuration file* item or
+the viewer's *Settings* button creates it with the defaults below (mode 0600).
+
 ```json
 {
   "retention_days": 30,

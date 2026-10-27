@@ -516,6 +516,42 @@ check(
     JSON.stringify(Util.spawned[Util.spawned.length - 1])
 );
 
+// A clean install has no config. Opening it must create one with defaults,
+// not fail or open the directory.
+const savedConfig = readJsonFile(CONFIG_FILE);
+Gio.File.new_for_path(CONFIG_FILE).delete(null);
+const createSpawnBefore = Util.spawned.length;
+applet._openConfig();
+check(
+    "config created when missing",
+    GLib.file_test(CONFIG_FILE, GLib.FileTest.EXISTS)
+);
+const createdConfig = readJsonFile(CONFIG_FILE);
+check(
+    "created config has defaults",
+    createdConfig.ignore_transient === true &&
+        createdConfig.dismiss_after_capture === false &&
+        createdConfig.toast_enabled === false &&
+        createdConfig.sound_enabled === false
+);
+check(
+    "created config opened instead of its directory",
+    Util.spawned.length === createSpawnBefore + 1 &&
+        String(Util.spawned[Util.spawned.length - 1][1]) === CONFIG_FILE,
+    JSON.stringify(Util.spawned[Util.spawned.length - 1])
+);
+const configInfo = Gio.File.new_for_path(CONFIG_FILE).query_info(
+    "unix::mode",
+    Gio.FileQueryInfoFlags.NONE,
+    null
+);
+check(
+    "created config is private",
+    (configInfo.get_attribute_uint32("unix::mode") & 0o777) === 0o600,
+    String(configInfo.get_attribute_uint32("unix::mode") & 0o777)
+);
+writeJsonFile(CONFIG_FILE, savedConfig);
+
 const aboutSpawnBefore = Util.spawned.length;
 applet._openAbout();
 check(

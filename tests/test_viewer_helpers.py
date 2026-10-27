@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import time
@@ -155,6 +157,31 @@ class ViewerHelpersTest(unittest.TestCase):
             code = self.module.main(["notify-center-viewer", "--version"])
         self.assertEqual(code, 0)
         self.assertIn(self.module.APP_VERSION, output.getvalue())
+
+    def test_ensure_config_file_creates_defaults(self) -> None:
+        root = Path(tempfile.mkdtemp(dir=self.tmp, prefix="config-"))
+        target = root / "notify-center" / "config.json"
+        original = self.module.CONFIG_PATH
+        self.module.CONFIG_PATH = target
+        try:
+            self.assertEqual(self.module.ensure_config_file(), target)
+            self.assertTrue(target.is_file())
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")),
+                self.module.DEFAULT_CONFIG,
+            )
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+            # An existing config must never be overwritten.
+            target.write_text('{"retention_days": 1}\n', encoding="utf-8")
+            self.module.ensure_config_file()
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")),
+                {"retention_days": 1},
+            )
+        finally:
+            self.module.CONFIG_PATH = original
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":
