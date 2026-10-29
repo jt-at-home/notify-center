@@ -206,7 +206,8 @@ future notifications from it are not recorded, toasted, sounded or removed from
 Cinnamon. Notifications already in the history stay. The viewer status bar
 shows a running total of notifications skipped by the ignore list
 (`N ignored`, stored in `ignored.json`), and **Preferences → History** lets you
-review or edit the list.
+review or edit the list and reset the counter with **Clear counter** (the
+ignore rules are left unchanged).
 
 `dismiss_after_capture` only applies to notifications the applet actually
 recorded: ignored apps and ignored transient notifications are left to Cinnamon

@@ -261,6 +261,26 @@ def read_ignored_count() -> int:
     return max(0, count)
 
 
+def clear_ignored_count() -> None:
+    """Reset the lifetime ignored counter to zero (atomic, mode 0600)."""
+    IGNORED_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = IGNORED_PATH.with_name(IGNORED_PATH.name + ".tmp")
+    payload = (
+        json.dumps({"count": 0, "updated": int(time.time())}, separators=(",", ":"))
+        + "\n"
+    )
+    try:
+        temporary.write_text(payload, encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, IGNORED_PATH)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def normalize_app_rule(value) -> str:
     text = str(value or "").strip().lower()
     if text.endswith(".desktop"):
@@ -1618,12 +1638,48 @@ class PreferencesDialog(Gtk.Dialog):
         box.pack_start(self.ignore_transient_toggle, False, False, 0)
 
         self.ignored_entry = self._list_row(box, "Ignored apps", "ignore_apps")
+        self._build_ignored_counter(box)
         self.persistent_apps_entry = self._list_row(
             box, "Keep in Cinnamon tray (apps)", "persistent_apps"
         )
         self.persistent_categories_entry = self._list_row(
             box, "Keep in Cinnamon tray (categories)", "persistent_categories"
         )
+
+    def _build_ignored_counter(self, parent: Gtk.Box) -> None:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        label = Gtk.Label(label="Ignored counter", xalign=0)
+        label.set_size_request(230, -1)
+        self.ignored_count_label = Gtk.Label(xalign=0)
+        self.clear_ignored_button = Gtk.Button(label="Clear counter")
+        self.clear_ignored_button.set_tooltip_text(
+            "Reset the lifetime ignored counter to zero; ignore rules are unchanged"
+        )
+        self.clear_ignored_button.connect(
+            "clicked", self._on_clear_ignored_counter
+        )
+        row.pack_start(label, False, False, 0)
+        row.pack_start(self.ignored_count_label, True, True, 0)
+        row.pack_end(self.clear_ignored_button, False, False, 0)
+        parent.pack_start(row, False, False, 0)
+        self._update_ignored_counter()
+
+    def _update_ignored_counter(self) -> None:
+        count = read_ignored_count()
+        noun = "notification" if count == 1 else "notifications"
+        self.ignored_count_label.set_text(f"{count} {noun} skipped")
+        self.clear_ignored_button.set_sensitive(count > 0)
+
+    def _on_clear_ignored_counter(self, *_args) -> None:
+        try:
+            clear_ignored_count()
+        except OSError as exc:
+            self._message(
+                "Cannot clear the ignored counter",
+                f"{IGNORED_PATH}\n\n{exc}",
+            )
+            return
+        self._update_ignored_counter()
 
     def _list_row(self, parent: Gtk.Box, label_text: str, key: str) -> Gtk.Entry:
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)

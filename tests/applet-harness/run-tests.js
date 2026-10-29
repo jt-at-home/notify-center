@@ -200,6 +200,20 @@ check(
     String(applet._ignoredCount)
 );
 
+// Clearing the counter from the viewer should reach the running applet.
+writeJsonFile(IGNORED_FILE, { count: 0, updated: Math.floor(Date.now() / 1000) });
+const ignoredResetLoop = new GLib.MainLoop(null, false);
+GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
+    ignoredResetLoop.quit();
+    return GLib.SOURCE_REMOVE;
+});
+ignoredResetLoop.run();
+check(
+    "external ignored reset reaches the applet",
+    applet._ignoredCount === 0,
+    String(applet._ignoredCount)
+);
+
 const keepResident = {
     resident: false,
     setResident(value) {

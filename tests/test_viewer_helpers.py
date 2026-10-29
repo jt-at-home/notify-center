@@ -283,6 +283,23 @@ class ViewerHelpersTest(unittest.TestCase):
             self.module.IGNORED_PATH = original
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_clear_ignored_count(self) -> None:
+        root = Path(tempfile.mkdtemp(dir=self.tmp, prefix="ignored-clear-"))
+        target = root / "notify-center" / "ignored.json"
+        original = self.module.IGNORED_PATH
+        self.module.IGNORED_PATH = target
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('{"count": 7}', encoding="utf-8")
+            self.module.clear_ignored_count()
+            self.assertEqual(self.module.read_ignored_count(), 0)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            self.module.clear_ignored_count()
+            self.assertEqual(self.module.read_ignored_count(), 0)
+        finally:
+            self.module.IGNORED_PATH = original
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_format_notification_count(self) -> None:
         fmt = self.module.format_notification_count
         self.assertEqual(fmt(0, 0), "0 notifications")

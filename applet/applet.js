@@ -199,6 +199,7 @@ NotificationCenterApplet.prototype = {
         this._originalNotifyForSource = null;
         this._statusMonitor = null;
         this._configMonitor = null;
+        this._ignoredMonitor = null;
         this._timeoutId = 0;
         this._menuCount = null;
         this._lastPrune = 0;
@@ -227,6 +228,7 @@ NotificationCenterApplet.prototype = {
         this._buildMenu(orientation);
         this._setupStatusMonitor();
         this._setupConfigMonitor();
+        this._setupIgnoredMonitor();
         this._updateBadge();
 
         this._timeoutId = GLib.timeout_add_seconds(
@@ -263,6 +265,10 @@ NotificationCenterApplet.prototype = {
         if (this._configMonitor) {
             this._configMonitor.cancel();
             this._configMonitor = null;
+        }
+        if (this._ignoredMonitor) {
+            this._ignoredMonitor.cancel();
+            this._ignoredMonitor = null;
         }
         if (this._ignoredFlushId) {
             GLib.source_remove(this._ignoredFlushId);
@@ -1208,6 +1214,46 @@ NotificationCenterApplet.prototype = {
                     if (name === "config.json") {
                         this._loadConfig();
                         this._updateBadge();
+                    }
+                }
+            );
+        } catch (e) {
+            global.logError(e);
+        }
+    },
+
+    // The viewer can reset ignored.json from Preferences → History. Reload the
+    // count when that happens, and cancel a pending flush so a stale in-memory
+    // count cannot overwrite the reset.
+    _setupIgnoredMonitor: function () {
+        try {
+            this._ignoredMonitor = Gio.File.new_for_path(
+                DATA_DIR
+            ).monitor_directory(Gio.FileMonitorFlags.NONE, null);
+            this._ignoredMonitor.connect(
+                "changed",
+                (monitor, file, otherFile, eventType) => {
+                    let name = "";
+                    try {
+                        name = file ? file.get_basename() : "";
+                    } catch (e) {
+                        name = "";
+                    }
+                    if (name !== "ignored.json") {
+                        return;
+                    }
+                    let data = readJson(IGNORED_FILE, null);
+                    if (!data || !isFinite(Number(data.count))) {
+                        return;
+                    }
+                    let count = Math.max(0, Math.round(Number(data.count)));
+                    if (count === this._ignoredCount) {
+                        return;
+                    }
+                    this._ignoredCount = count;
+                    if (this._ignoredFlushId) {
+                        GLib.source_remove(this._ignoredFlushId);
+                        this._ignoredFlushId = 0;
                     }
                 }
             );
